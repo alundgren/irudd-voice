@@ -136,3 +136,29 @@ struct HardCheckTests {
         _ = HardChecks.check(transcript: "nine \(hundreds)", cleaned: "x")
     }
 }
+
+/// Details the shared fixtures can't carry (accepted replies with extra keys
+/// would fail the label tool's teacher schema). cli/tests/test_hardchecks.py
+/// has the same cases.
+struct StrictJSONTests {
+    @Test func keysCompareByCodePoints() {
+        #expect(CleanupReply.parse("{\"cleaned\": \"a\", \"caf\u{e9}\": 1, \"cafe\u{301}\": 2}").cleaned == "a")
+    }
+
+    @Test func nestingUpTo100IsFine() {
+        let deep = String(repeating: "[", count: 99) + String(repeating: "]", count: 99)
+        #expect(CleanupReply.parse(#"{"cleaned": "a", "x": "# + deep + "}").cleaned == "a")
+    }
+
+    @Test func surrogatePairsJoin() {
+        #expect(CleanupReply.parse(#"{"cleaned": "a😀"}"#).cleaned == "a\u{1F600}")
+    }
+
+    @Test func numbersOnlyNeedTheGrammar() {
+        #expect(CleanupReply.parse(#"{"cleaned": "a", "n": 1e400, "m": -0.5E-3}"#).cleaned == "a")
+        for bad in ["01", "1.", ".5", "1e", "-", "+1", "0x10"] {
+            #expect(StrictJSON.parse(bad) == nil, "\(bad)")
+        }
+        #expect(StrictJSON.parse(" -0.0e+5 ") == .number)
+    }
+}

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
-from . import prompt
+from . import hardchecks, prompt
 
 TEACHER_DIR_PREFIX = "irudd-voice-teacher-"
 TIMEOUT_SECONDS = 300
@@ -115,15 +115,19 @@ def read_cleaned(text: str | None, structured: object = None) -> tuple[str | Non
     """The label from a teacher's reply text (JSON, optionally in a ```
     fence) or from its already-parsed structured output."""
     value = structured
-    if value is None:
-        stripped = (text or "").strip()
-        fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
-        if fence:
-            stripped = fence.group(1)
-        try:
-            value = json.loads(stripped)
-        except json.JSONDecodeError:
-            return None, "malformed"
+    # The same strict JSON as the app's reply reading (shared/README.md), so a
+    # lone surrogate or a repeated key is rejected instead of stored.
+    try:
+        if value is None:
+            stripped = (text or "").strip()
+            fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
+            if fence:
+                stripped = fence.group(1)
+            value = hardchecks.strict_json(stripped)
+        else:
+            hardchecks.check_strict(value)
+    except ValueError:  # includes json.JSONDecodeError
+        return None, "malformed"
     if not valid_reply(value, json.loads(schema_path().read_text())):
         return None, "malformed"
     cleaned = value["cleaned"].strip()

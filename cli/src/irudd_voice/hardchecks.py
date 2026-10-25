@@ -120,7 +120,7 @@ def _no_constants(name: str) -> None:
     raise _NotStrictJSON(name)  # NaN, Infinity, -Infinity
 
 
-def _check_strict(value: object, depth: int = 1) -> None:
+def check_strict(value: object, depth: int = 1) -> None:
     """Refuses lone surrogates (from escapes like "\\ud800") and deep nesting."""
     if isinstance(value, str):
         if any(0xD800 <= ord(c) <= 0xDFFF for c in value):
@@ -130,7 +130,7 @@ def _check_strict(value: object, depth: int = 1) -> None:
             raise _NotStrictJSON("too deep")
         items = [*value.keys(), *value.values()] if isinstance(value, dict) else value
         for item in items:
-            _check_strict(item, depth + 1)
+            check_strict(item, depth + 1)
 
 
 def strict_json(text: str) -> object:
@@ -141,7 +141,7 @@ def strict_json(text: str) -> object:
         value = json.loads(text, object_pairs_hook=_no_repeated_keys, parse_constant=_no_constants)
     except RecursionError:
         raise _NotStrictJSON("too deep") from None
-    _check_strict(value)
+    check_strict(value)
     return value
 
 
