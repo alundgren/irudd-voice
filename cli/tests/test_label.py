@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
@@ -216,22 +217,53 @@ def test_rejected_thoughts_are_skipped_unless_retried(app_db, fake, no_vocabular
                                               "ON c.id = l.chunk_id WHERE c.raw_text = 'run the tests'")
 
 
+def wait_until_gone(pid: int) -> bool:
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.1)
+    os.kill(pid, signal.SIGKILL)
+    return False
+
+
+def test_ctrl_c_stops_the_teacher_and_its_children(fake, tmp_path, monkeypatch):
+    """Ctrl-C reaches only the CLI (the teacher has its own session); ask()
+    must kill the teacher's whole process group and re-raise."""
+    pid_file = tmp_path / "child.pid"
+    fake.reply("run the tests", hang=str(pid_file))
+    real_popen = subprocess.Popen
+    started = []
+
+    class Interrupted(real_popen):
+        def communicate(self, input=None, timeout=None):
+            if started:  # the cleanup's own communicate
+                return super().communicate(input, timeout)
+            started.append(self.pid)
+            self.stdin.write(input)
+            self.stdin.close()
+            for _ in range(100):
+                if pid_file.exists() and pid_file.read_text():
+                    break
+                time.sleep(0.05)
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(subprocess, "Popen", Interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        teacher.ask("claude", "run the tests")
+    child = int(pid_file.read_text())
+    assert wait_until_gone(child), "the teacher's child process outlived Ctrl-C"
+    assert wait_until_gone(started[0]), "the teacher outlived Ctrl-C"
+
+
 def test_a_hanging_teacher_is_killed_with_its_children(app_db, fake, no_vocabulary, tmp_path, monkeypatch):
     pid_file = tmp_path / "child.pid"
     add_chunk(app_db, "run the tests")
     fake.reply("run the tests", hang=str(pid_file))
     monkeypatch.setattr(teacher, "TIMEOUT_SECONDS", 2)
     assert label(app_db, no_vocabulary) == 1
-    child = int(pid_file.read_text())
-    for _ in range(50):
-        try:
-            os.kill(child, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.1)
-    else:
-        os.kill(child, signal.SIGKILL)
-        pytest.fail("the teacher's child process outlived the timeout")
+    assert wait_until_gone(int(pid_file.read_text())), "the teacher's child process outlived the timeout"
     assert rows(app_db, "SELECT COUNT(*) FROM labels") == [(0,)]
 
 
@@ -285,8 +317,15 @@ def test_teachers_run_contained_and_see_only_text(app_db, fake, no_vocabulary, n
         assert argv[:1] == ["exec"]
         for flag in ("--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--json"):
             assert flag in argv
-        assert argv[argv.index("-s") + 1] == "read-only"
-        assert argv[argv.index("-c") + 1] == 'web_search="disabled"'
+        # The permission profile replaces -s: with both, -s wins and the home folder is readable.
+        assert "-s" not in argv and "--sandbox" not in argv
+        settings = [argv[i + 1] for i, flag in enumerate(argv) if flag == "-c"]
+        assert settings == [
+            'web_search="disabled"',
+            'default_permissions="irudd_voice_teacher"',
+            'permissions.irudd_voice_teacher.filesystem={":minimal"="read", ":slash_tmp"="none"}',
+            "permissions.irudd_voice_teacher.network.enabled=false",
+        ]
         disabled = {argv[i + 1] for i, flag in enumerate(argv) if flag == "--disable"}
         assert disabled == {"shell_tool", "unified_exec", "view_image", "image_generation", "multi_agent",
                             "plugins", "apps", "hooks", "computer_use", "browser_use"}

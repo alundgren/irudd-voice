@@ -42,14 +42,26 @@ locked down:
 - Claude: `claude -p --tools "" --strict-mcp-config --no-session-persistence
   --disable-slash-commands --safe-mode --settings '{"disableAllHooks":true}'
   --system-prompt <teacher prompt> --json-schema <schema> --output-format json`
-- Codex: `codex exec --ephemeral --ignore-user-config -s read-only
-  --skip-git-repo-check --output-schema shared/teacher-reply.schema.json
-  --json --color never -c web_search="disabled" --disable shell_tool
-  --disable unified_exec --disable view_image --disable image_generation
-  --disable multi_agent --disable plugins --disable apps --disable hooks
-  --disable computer_use --disable browser_use -` (prompt on stdin).
-  In codex-cli 0.164.0 `unified_exec` stays on even when disabled; the
-  read-only sandbox and the item check below still apply.
+- Codex: `codex exec --ephemeral --ignore-user-config --skip-git-repo-check
+  --output-schema shared/teacher-reply.schema.json --json --color never
+  -c web_search="disabled" -c default_permissions="irudd_voice_teacher"
+  -c 'permissions.irudd_voice_teacher.filesystem={":minimal"="read", ":slash_tmp"="none"}'
+  -c permissions.irudd_voice_teacher.network.enabled=false
+  --disable shell_tool --disable unified_exec --disable view_image
+  --disable image_generation --disable multi_agent --disable plugins
+  --disable apps --disable hooks --disable computer_use --disable browser_use -`
+  (prompt on stdin). With these flags Codex offers the model no shell tool.
+  The permission profile means that anything it does run can read only
+  system files: not your home folder, /tmp or other temp files, and with no
+  network. The profile replaces `-s read-only`: when both are given, `-s`
+  wins and the home folder is readable again.
+
+To check this on your Mac without any model call (it uses `codex sandbox`
+and a fake model server on 127.0.0.1):
+
+```sh
+uv run --project cli python scripts/codex-teacher-probe.py   # from the repo root
+```
 
 A label is rejected, with the reason stored, when the reply is malformed
 or empty, Codex's event stream has any item other than a message,

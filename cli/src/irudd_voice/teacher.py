@@ -35,12 +35,24 @@ CODEX_ANSWER_ITEMS = {"agent_message", "reasoning", "todo_list", "error"}
 
 # Codex features that give the model tools, turned off for every label run
 # (`codex features list` shows them on by default in codex-cli 0.164.0).
-# unified_exec stays on in 0.164.0 whatever is passed (--disable, or
-# -c features.unified_exec=false); the read-only sandbox and the
-# CODEX_ANSWER_ITEMS check cover it.
+# `features list` still shows unified_exec on after --disable, but with
+# shell_tool off Codex offers no exec_command tool and answers a forced call
+# with "unsupported call" (scripts/codex-teacher-probe.py checks this).
 CODEX_DISABLED_FEATURES = (
     "shell_tool", "unified_exec", "view_image", "image_generation", "multi_agent", "plugins", "apps",
     "hooks", "computer_use", "browser_use",
+)
+
+# A Codex permission profile for anything that does run: system files only
+# (":minimal"), no /tmp, no network. The home folder, the repo, the database
+# and other temp files can't be read. Passed with -c because the user's
+# config.toml is ignored. It replaces `-s read-only`: when both are given,
+# -s wins and the home folder is readable again.
+CODEX_PERMISSION_PROFILE = "irudd_voice_teacher"
+CODEX_PERMISSIONS = (
+    f'default_permissions="{CODEX_PERMISSION_PROFILE}"',
+    f'permissions.{CODEX_PERMISSION_PROFILE}.filesystem={{":minimal"="read", ":slash_tmp"="none"}}',
+    f"permissions.{CODEX_PERMISSION_PROFILE}.network.enabled=false",
 )
 
 
@@ -141,13 +153,14 @@ def codex_command(schema_file: Path, model: str | None = None, executable: str =
         executable, "exec",
         "--ephemeral",
         "--ignore-user-config",
-        "-s", "read-only",
         "--skip-git-repo-check",
         "--output-schema", str(schema_file),
         "--json",
         "--color", "never",
         "-c", 'web_search="disabled"',
     ]
+    for setting in CODEX_PERMISSIONS:
+        command += ["-c", setting]
     for feature in CODEX_DISABLED_FEATURES:
         command += ["--disable", feature]
     if model:
@@ -221,6 +234,13 @@ def command(teacher: str, system: str, model: str | None = None, executable: str
     return codex_command(schema_path(), model, executable or "codex")
 
 
+def _kill_group(process: subprocess.Popen) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    with contextlib.suppress(Exception):
+        process.communicate(timeout=10)
+
+
 def ask(teacher: str, transcript: str, terms: list[str] | tuple[str, ...] = (), model: str | None = None,
         timeout: float | None = None) -> Answer:
     """One contained teacher call."""
@@ -240,10 +260,13 @@ def ask(teacher: str, transcript: str, terms: list[str] | tuple[str, ...] = (), 
         try:
             stdout, stderr = process.communicate(stdin, timeout=timeout)
         except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
+            _kill_group(process)
             return Answer(None, "timeout", model=model, detail=f"no answer after {timeout:.0f} s")
+        except BaseException:
+            # Ctrl-C reaches only this process (the teacher has its own
+            # session), so stop the teacher before passing it on.
+            _kill_group(process)
+            raise
     answer = read_claude(stdout) if teacher == "claude" else read_codex(stdout, model)
     if process.returncode != 0 and answer.failure is None:
         answer.cleaned, answer.failure = None, "teacher_error"
