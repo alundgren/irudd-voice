@@ -45,6 +45,37 @@ public struct ThoughtCleanup: Sendable, Equatable {
     public var pieces: Int
     /// For the events log: what failed, and on which piece.
     public var detail: String
+    /// The hard checks the cleaned text failed (`hardCheck` only).
+    public var failedChecks: [String] = []
+
+    /// Why the heard text was pasted, in plain words for the preview
+    /// ("cleanup changed a number"); nil when the cleaned text was used.
+    public var plainReason: String? {
+        switch outcome {
+        case .cleaned: nil
+        case .unloadedForTraining: "training is using the model"
+        case .noModel: "no cleanup model is loaded yet"
+        case .noHelper: "the cleanup helper isn't running"
+        case .crash: "the cleanup helper stopped"
+        case .timeout: "the model took too long"
+        case .cutOff: "the model's reply was cut off"
+        case .thinkTags: "the model started reasoning instead of tidying"
+        case .malformed: "the model's reply couldn't be read"
+        case .empty: "the model returned nothing"
+        case .helperError: "the cleanup helper had a problem"
+        case .hardCheck:
+            switch failedChecks.first {
+            case "dropped": "cleanup left out what you said"
+            case "answers": "cleanup answered instead of tidying"
+            case "question": "cleanup turned a question into a statement"
+            case "numbers": "cleanup changed a number"
+            case "negation": "cleanup changed a \u{201C}not\u{201D} or \u{201C}no\u{201D}"
+            case "identifiers": "cleanup changed a name or identifier"
+            case "new_words": "cleanup added words you didn't say"
+            default: "cleanup changed the meaning"
+            }
+        }
+    }
 
     public var record: CleanupRecord {
         CleanupRecord(status: outcome.rawValue, cleanedText: outcome == .cleaned ? pasteText : nil,
@@ -81,11 +112,12 @@ public struct ThoughtCleaner: Sendable {
         let clock = ContinuousClock()
         let start = clock.now
         let pieces = ThoughtPieces.split(transcript, maxWords: maxWords)
-        func finish(_ outcome: CleanupOutcome, _ text: String, _ detail: String) -> ThoughtCleanup {
+        func finish(_ outcome: CleanupOutcome, _ text: String, _ detail: String,
+                    failedChecks: [String] = []) -> ThoughtCleanup {
             let ms = Int64(((clock.now - start).inSeconds * 1000).rounded())
             return ThoughtCleanup(raw: transcript, pasteText: text, outcome: outcome, modelID: modelID,
                                   promptVersion: prompt.version, milliseconds: ms, pieces: pieces.count,
-                                  detail: detail)
+                                  detail: detail, failedChecks: failedChecks)
         }
         var cleaned: [String] = []
         for (index, piece) in pieces.enumerated() {
@@ -94,7 +126,7 @@ public struct ThoughtCleaner: Sendable {
                 cleaned.append(text)
             case .failure(let failure):
                 let place = pieces.count > 1 ? " (piece \(index + 1) of \(pieces.count))" : ""
-                return finish(failure.outcome, transcript, failure.detail + place)
+                return finish(failure.outcome, transcript, failure.detail + place, failedChecks: failure.failedChecks)
             }
         }
         let joined = cleaned.filter { !$0.isEmpty }.joined(separator: " ")
@@ -107,6 +139,7 @@ public struct ThoughtCleaner: Sendable {
     struct Failure: Error {
         var outcome: CleanupOutcome
         var detail: String
+        var failedChecks: [String] = []
     }
 
     func clean(piece: String) async -> Result<String, Failure> {
@@ -146,7 +179,7 @@ public struct ThoughtCleaner: Sendable {
             maxWordsRatio: prompt.checks.maxOutputWordsRatio, maxWordsSlack: prompt.checks.maxOutputWordsSlack)
         if !failed.isEmpty {
             return .failure(Failure(outcome: .hardCheck, detail:
-                "Failed \(failed.joined(separator: ", ")); the model said: \(Self.excerpt(text))"))
+                "Failed \(failed.joined(separator: ", ")); the model said: \(Self.excerpt(text))", failedChecks: failed))
         }
         return .success(text)
     }

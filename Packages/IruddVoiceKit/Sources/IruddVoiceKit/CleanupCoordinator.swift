@@ -37,7 +37,19 @@ public actor CleanupCoordinator {
         /// The helper's memory footprint at the last check.
         public var helperBytes: UInt64?
         public var leaseUntil: Date?
+        /// The active model couldn't be loaded, so the default is used.
+        public var activeProblem: ModelProblem?
     }
+
+    /// A model that couldn't be loaded, and why, in plain words.
+    public struct ModelProblem: Equatable, Sendable {
+        public var id: String
+        public var reason: String
+    }
+
+    /// How long to wait before trying a model again after the helper
+    /// didn't answer three loads in a row.
+    public static let loadRetrySeconds: TimeInterval = 600
 
     public enum Keys {
         public static let unloadUntil = "cleanup.unload_until"
@@ -67,11 +79,14 @@ public actor CleanupCoordinator {
     /// Folders whose checksums the helper checked in this run, by id and
     /// manifest date, so a reload after a crash doesn't hash gigabytes again.
     private var verified: Set<String> = []
-    /// Folders that failed to load, by id → manifest date; not retried
-    /// until the manifest changes.
-    private var failedLoads: [String: String] = [:]
+    /// Folders the helper refused (or that are missing), by id → manifest
+    /// date; not retried until the manifest changes.
+    private var refusedLoads: [String: String] = [:]
     /// Loads that failed because the helper didn't answer, by id.
     private var loadTries: [String: Int] = [:]
+    /// After three such failures, not tried again until this time.
+    private var retryAt: [String: Date] = [:]
+    private var activeProblem: ModelProblem?
     private var thoughtsCleaning = 0
     private var checking = false
     private var written: (status: String?, loaded: String?) = (nil, nil)
@@ -92,7 +107,7 @@ public actor CleanupCoordinator {
 
     public var snapshot: Snapshot {
         Snapshot(state: state, since: stateSince, loadedModel: loadedModel, helperBytes: helperBytes,
-                 leaseUntil: leaseUntil)
+                 leaseUntil: leaseUntil, activeProblem: activeProblem)
     }
 
     // MARK: Idle check
@@ -111,7 +126,9 @@ public actor CleanupCoordinator {
 
         if let lease = await activeLease() {
             leaseUntil = lease
-            guard !busy, state != .unloadedForTraining else { return }
+            // Checked again with no await before the unload: a thought that
+            // started cleaning meanwhile finishes first.
+            guard !busy, thoughtsCleaning == 0, state != .unloadedForTraining else { return }
             await unloadForTraining()
             return
         }
@@ -124,13 +141,16 @@ public actor CleanupCoordinator {
         }
 
         let active = (try? await store.activeModel().modelID) ?? nil
+        if activeProblem != nil && activeProblem?.id != active { activeProblem = nil }
         let wanted = [active, defaultModelID].compactMap { $0 }.reduce(into: [String]()) {
             if !$0.contains($1) { $0.append($1) }
         }
         for id in wanted {
             if loadedModel == id { break }
-            guard failedLoads[id] == nil || failedLoads[id] != manifestDate(id) else { continue }
-            if await load(id) { break }
+            if let refused = refusedLoads[id], refused == manifestDate(id) { continue }
+            if let at = retryAt[id], now() < at { continue }
+            let result = await load(id)
+            if result != .failed { break }
         }
         if loadedModel == nil, case .loaded = state { setState(.unloaded) }
         await writeStatus()
@@ -182,17 +202,23 @@ public actor CleanupCoordinator {
         }
     }
 
-    private func load(_ id: String) async -> Bool {
+    private enum LoadResult { case loaded, failed, deferred }
+
+    private func load(_ id: String) async -> LoadResult {
+        // No await between this check and `.loading`: a thought that
+        // starts cleaning after it sees `.loading` and pastes raw.
+        guard thoughtsCleaning == 0 else { return .deferred }
         let date = manifestDate(id)
         guard let folder = ModelPaths.folder(forModel: id, in: modelsFolder),
               FileManager.default.fileExists(atPath: folder.appendingPathComponent(ModelManifest.fileName).path)
         else {
-            failedLoads[id] = date
+            refusedLoads[id] = date
             let hint = id == CleanupDefaults.modelID
                 ? " Run: irudd-voice models prepare \(CleanupDefaults.prepareCandidate)" : ""
+            noteProblem(id, "its folder isn't in the models folder")
             setState(.failed("no model folder for \(id).\(hint)"))
             await log(.error, "No model folder for \(id) in \(modelsFolder.path).\(hint)")
-            return false
+            return .failed
         }
         let key = "\(id)@\(date)"
         setState(.loading(id))
@@ -205,16 +231,17 @@ public actor CleanupCoordinator {
                                              timeout: .seconds(180))
         } catch {
             // The helper didn't answer or stopped: three tries, then wait
-            // for the manifest to change.
+            // `loadRetrySeconds` before the next ones.
             loadedModel = nil
             loadTries[id, default: 0] += 1
             if loadTries[id, default: 0] >= 3 {
-                failedLoads[id] = date
+                retryAt[id] = now().addingTimeInterval(Self.loadRetrySeconds)
                 loadTries[id] = nil
             }
+            noteProblem(id, "the cleanup helper didn't answer")
             setState(.failed("\(id): \(error.localizedDescription)"))
             await log(.error, "Couldn't load \(id): \(error.localizedDescription)")
-            return false
+            return .failed
         }
         helperBytes = response.status.residentBytes
         guard response.error == nil, response.status.state == .ready, response.status.modelID == id else {
@@ -222,21 +249,30 @@ public actor CleanupCoordinator {
             // not tried again until its manifest changes.
             let reason = response.error ?? "the helper isn't ready (\(response.status.state.rawValue))"
             loadedModel = nil
-            failedLoads[id] = date
+            refusedLoads[id] = date
             loadTries[id] = nil
+            noteProblem(id, reason)
             setState(.failed("\(id): \(reason)"))
             await log(.error, "Couldn't load \(id): \(reason)")
-            return false
+            return .failed
         }
         verified.insert(key)
-        failedLoads[id] = nil
+        refusedLoads[id] = nil
         loadTries[id] = nil
+        retryAt[id] = nil
+        if activeProblem?.id == id { activeProblem = nil }
         loadedModel = id
         terms = readTerms()
         setState(.loaded(id))
         await log(.info, String(format: "Loaded %@ in %.1f s (%d vocabulary terms)", id,
                                 (clock.now - start).inSeconds, terms.count))
-        return true
+        return .loaded
+    }
+
+    /// Remembers why a model other than the default couldn't be loaded,
+    /// for Settings → Model.
+    private func noteProblem(_ id: String, _ reason: String) {
+        if id != defaultModelID { activeProblem = ModelProblem(id: id, reason: reason) }
     }
 
     private func readTerms() -> [String] {

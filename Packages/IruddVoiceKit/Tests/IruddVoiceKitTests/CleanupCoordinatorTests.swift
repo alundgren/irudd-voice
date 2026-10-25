@@ -11,8 +11,12 @@ final class ScriptedHelper: CleanupHelper, @unchecked Sendable {
     private var _unloads = 0
     /// Model IDs whose folder the helper refuses.
     var refuse: Set<String> = []
-    /// How long a load takes.
+    /// How long a load, a status call and a clean take.
     var loadTime: Duration = .zero
+    var statusTime: Duration = .zero
+    var cleanTime: Duration = .zero
+    /// Thrown by load (the helper didn't answer).
+    var loadError: CleanupClientError?
     /// The reply to each clean request; the default echoes the transcript.
     var reply: @Sendable (CleanRequest) throws -> CleanResponse = { request in
         CleanResponse(reply: "{\"cleaned\": \(CleanupPrompt.jsonString(request.transcript))}")
@@ -27,6 +31,7 @@ final class ScriptedHelper: CleanupHelper, @unchecked Sendable {
     var unloads: Int { lock.withLock { _unloads } }
 
     func status(timeout: Duration) async throws -> CleanupStatus {
+        if statusTime > .zero { try await Task.sleep(for: statusTime) }
         let loaded = loaded
         return CleanupStatus(state: loaded == nil ? .empty : .ready, modelID: loaded, residentBytes: 3 << 30)
     }
@@ -34,6 +39,7 @@ final class ScriptedHelper: CleanupHelper, @unchecked Sendable {
     func load(_ request: LoadRequest, timeout: Duration) async throws -> LoadResponse {
         lock.withLock { _loads.append(request) }
         if loadTime > .zero { try await Task.sleep(for: loadTime) }
+        if let loadError { throw loadError }
         let id = request.modelID ?? ""
         if refuse.contains(id) {
             loaded = nil
@@ -45,6 +51,7 @@ final class ScriptedHelper: CleanupHelper, @unchecked Sendable {
 
     func clean(_ request: CleanRequest, timeout: Duration?) async throws -> CleanResponse {
         lock.withLock { _requests.append(request) }
+        if cleanTime > .zero { try await Task.sleep(for: cleanTime) }
         guard loaded != nil else { return CleanResponse(reply: nil, error: "No cleanup model is loaded.") }
         return try reply(request)
     }
@@ -363,9 +370,97 @@ struct CleanupCoordinatorTests {
         await fixture.coordinator.idleCheck(busy: false)
         #expect(fixture.helper.loaded == CleanupDefaults.modelID)
         #expect(try await fixture.state("cleanup.status") == "loaded")
+        // Settings says why the default is in use.
+        #expect(await fixture.coordinator.snapshot.activeProblem
+                == .init(id: trained, reason: "model.safetensors doesn't match"))
         // The refused folder isn't tried again until its manifest changes.
         await fixture.coordinator.idleCheck(busy: false)
         #expect(fixture.helper.loads.map(\.modelID) == [trained, CleanupDefaults.modelID])
+        // Going back to the default clears the note.
+        try fixture.cli().query("UPDATE active_model SET model_id = NULL")
+        await fixture.coordinator.idleCheck(busy: false)
+        #expect(await fixture.coordinator.snapshot.activeProblem == nil)
+    }
+
+    @Test func helperThatDoesntAnswerIsRetriedAfterTheBackoff() async throws {
+        let clock = TestClock()
+        let fixture = try CleanupFixture(clock: clock)
+        fixture.helper.loadError = .timedOut
+        for _ in 0..<5 {
+            await fixture.coordinator.idleCheck(busy: false)
+            clock.advance(10)
+        }
+        // Three tries, then a pause.
+        #expect(fixture.helper.loads.count == 3)
+        #expect(try await fixture.state("cleanup.status")?.hasPrefix("failed: ") == true)
+        clock.advance(CleanupCoordinator.loadRetrySeconds)
+        fixture.helper.loadError = nil
+        await fixture.coordinator.idleCheck(busy: false)
+        #expect(fixture.helper.loads.count == 4)
+        #expect(try await fixture.state("cleanup.status") == "loaded")
+    }
+
+    /// A thought that starts cleaning while a check is still deciding: the
+    /// check doesn't load, switch or unload under it.
+    @Test func noLoadOrUnloadWhileAThoughtIsCleaning() async throws {
+        let trained = "gemma-4-e2b-ft-20261025-1"
+        let fixture = try CleanupFixture(models: [CleanupDefaults.modelID, trained])
+        await fixture.coordinator.idleCheck(busy: false)
+        fixture.helper.cleanTime = .milliseconds(400)
+
+        // Switch: the active model changes while a thought is being cleaned.
+        try fixture.addModel(trained, active: true)
+        let cleaning = Task { await fixture.coordinator.clean("run the tests") }
+        try await Task.sleep(for: .milliseconds(50))
+        await fixture.coordinator.idleCheck(busy: false)
+        #expect(fixture.helper.loaded == CleanupDefaults.modelID)
+        #expect(await cleaning.value.outcome == .cleaned)
+        await fixture.coordinator.idleCheck(busy: false)
+        #expect(fixture.helper.loaded == trained)
+
+        // The check waits on the helper, and a thought starts meanwhile.
+        try fixture.cli().query("UPDATE active_model SET model_id = NULL")
+        fixture.helper.statusTime = .milliseconds(200)
+        let check = Task { await fixture.coordinator.idleCheck(busy: false) }
+        try await Task.sleep(for: .milliseconds(50))
+        let second = Task { await fixture.coordinator.clean("run the tests") }
+        await check.value
+        #expect(fixture.helper.loaded == trained)
+        #expect(await second.value.outcome == .cleaned)
+        fixture.helper.statusTime = .zero
+
+        // Lease: no unload until the thought is done.
+        let third = Task { await fixture.coordinator.clean("run the tests") }
+        try await Task.sleep(for: .milliseconds(50))
+        try await fixture.setLease(seconds: 120)
+        await fixture.coordinator.idleCheck(busy: false)
+        #expect(fixture.helper.unloads == 0)
+        #expect(await third.value.outcome == .cleaned)
+        await fixture.coordinator.idleCheck(busy: false)
+        #expect(fixture.helper.unloads == 1)
+    }
+
+    @Test func plainReasons() async throws {
+        let fixture = try CleanupFixture()
+        await fixture.coordinator.idleCheck(busy: false)
+        fixture.helper.reply = { _ in CleanResponse(reply: #"{"cleaned": "Set the timeout to fifteen seconds."}"#) }
+        let changed = await fixture.coordinator.clean("set the timeout to fifty seconds")
+        #expect(changed.failedChecks == ["numbers"])
+        #expect(changed.plainReason == "cleanup changed a number")
+        fixture.helper.reply = { _ in CleanResponse(reply: nil, timedOut: true) }
+        #expect(await fixture.coordinator.clean("run it").plainReason == "the model took too long")
+        try await fixture.setLease(seconds: 120)
+        #expect(await fixture.coordinator.clean("run it").plainReason == "training is using the model")
+        fixture.helper.reply = { request in
+            CleanResponse(reply: "{\"cleaned\": \(CleanupPrompt.jsonString(request.transcript))}")
+        }
+        try await fixture.store.deleteAppState(CleanupCoordinator.Keys.unloadUntil)
+        #expect(await fixture.coordinator.clean("run it").plainReason == nil)
+        // Every outcome but cleaned has a reason, and none shows an internal code.
+        for outcome in CleanupOutcome.allCases where outcome != .cleaned {
+            let reason = try #require(ThoughtCleanup.raw("x", outcome, detail: "").plainReason)
+            #expect(!reason.contains("_"))
+        }
     }
 
     @Test func reloadsAfterTheHelperRestarts() async throws {
@@ -556,5 +651,71 @@ struct ModelOverviewTests {
     @Test func notAReport() {
         #expect(EvalSummary.parse("{}") == nil)
         #expect(EvalSummary.parse("not json") == nil)
+    }
+}
+
+@MainActor
+struct DeliveryLineTests {
+    /// Records deliveries in order.
+    final class Log: @unchecked Sendable {
+        private let lock = NSLock()
+        private var entries: [String] = []
+        func add(_ entry: String) { lock.withLock { entries.append(entry) } }
+        var all: [String] { lock.withLock { entries } }
+    }
+
+    @Test func deliversInTheOrderThoughtsEnded() async {
+        let line = DeliveryLine<String>()
+        let log = Log()
+        // A long thought A, then a short thought B that's ready first.
+        line.add(make: { _ in
+            try? await Task.sleep(for: .milliseconds(300))
+            log.add("made A")
+            return "A"
+        }, deliver: { _, item, _ in log.add("pasted \(item)") })
+        let last = line.add(make: { _ in
+            log.add("made B")
+            return "B"
+        }, deliver: { _, item, _ in log.add("pasted \(item)") })
+        #expect(line.isBusy)
+        await last.value
+        #expect(log.all == ["made B", "made A", "pasted A", "pasted B"])
+        #expect(!line.isBusy)
+    }
+
+    @Test func throwAwayHitsTheNewestThoughtOnly() async {
+        let line = DeliveryLine<String>()
+        let log = Log()
+        line.add(make: { _ in
+            try? await Task.sleep(for: .milliseconds(300))
+            return "A"
+        }, deliver: { _, item, thrownAway in log.add("\(item) \(thrownAway ? "discarded" : "pasted")") })
+        let last = line.add(make: { _ in
+            try? await Task.sleep(for: .milliseconds(100))
+            return "B"
+        }, deliver: { _, item, thrownAway in log.add("\(item) \(thrownAway ? "discarded" : "pasted")") })
+        // Throw Away while B is being cleaned: B, not A.
+        try? await Task.sleep(for: .milliseconds(20))
+        #expect(line.throwAwayNewest() == 2)
+        #expect(line.isThrownAway(2) && !line.isThrownAway(1))
+        await last.value
+        #expect(log.all == ["A pasted", "B discarded"])
+        // The mark went with B: the next thought isn't affected.
+        let next = line.add(make: { _ in "C" }, deliver: { _, item, thrownAway in
+            log.add("\(item) \(thrownAway ? "discarded" : "pasted")")
+        })
+        await next.value
+        #expect(log.all.last == "C pasted")
+        #expect(line.throwAwayNewest() == nil)
+    }
+
+    @Test func reportsWhatsLeftAfterEachDelivery() async {
+        let line = DeliveryLine<Int>()
+        let log = Log()
+        line.onDelivered = { remaining in log.add("left \(remaining)") }
+        line.add(make: { $0 }, deliver: { _, _, _ in })
+        let last = line.add(make: { $0 }, deliver: { _, _, _ in })
+        await last.value
+        #expect(log.all == ["left 1", "left 0"])
     }
 }

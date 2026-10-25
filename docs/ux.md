@@ -72,12 +72,14 @@ waits for that exact mic.
 
 The preview floats just above the bottom of the screen, centred. It never
 takes focus or clicks. In Transcript mode, when a thought ends, it shows
-what was heard with a ✨ while it's being cleaned. After the paste it shows
-what was **heard** above what was **pasted** for 4 seconds. Words cleanup
-removed are struck out in the heard line, and words it added or changed are
-in the accent colour in the pasted line. If cleanup failed, a line under
-them says why and that the heard text was pasted. Off and Dot modes show
-none of this.
+what was heard with a ✨ while it's being cleaned. Once the paste is done
+it shows what was **heard** above what was **pasted** for 4 seconds. Words
+cleanup removed are struck out in the heard line, and words it added or
+changed are in the accent colour in the pasted line. If the heard text was
+used instead, it's shown once under a plain reason, such as "Pasted as
+heard: cleanup changed a number" or "Pasted as heard: training is using the
+model". If the text box changed before the paste, it says **Waiting**
+instead of Pasted. Off and Dot modes show none of this.
 
 ## Cleanup
 
@@ -105,6 +107,10 @@ up** meanwhile; a 50-word thought takes about 1.2 s.
   sentence ends (or after commas and the like, or at the word limit), in
   order, and pasted once. If any piece fails, the whole thought is pasted
   raw, never a mix.
+- **Order:** thoughts are pasted in the order they ended. A short thought
+  that's ready first waits for a long one before it.
+- **Throw away** while text is being made (transcribed or cleaned) drops
+  the newest such thought, and only that one.
 - **Switching models** only happens when no thought is in progress. The
   app checks the active model every 10 s when idle and after each thought.
 - **Training** asks the app to unload the model while it runs (the
@@ -113,7 +119,10 @@ up** meanwhile; a 50-word thought takes about 1.2 s.
   training ends.
 - **Settings → Model** shows the active model, whether it's the base or a
   trained one (when, on how many thoughts), the helper's status and memory,
-  and the last eval against the previous model.
+  and the last eval against the previous model. If the active trained
+  model couldn't be loaded, it says the default is in use and why. A folder
+  the helper refused isn't tried again until its manifest changes. A helper
+  that didn't answer gets three tries, then another go 10 minutes later.
 
 ## Pasting
 

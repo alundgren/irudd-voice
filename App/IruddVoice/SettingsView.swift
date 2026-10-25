@@ -139,12 +139,18 @@ private struct CleanupStatusLine: View {
                 case .failed(let reason):
                     Text("Failed: \(reason)").foregroundStyle(.red).textSelection(.enabled)
                 }
+                if let problem = snapshot.activeProblem, let loaded = snapshot.loadedModel {
+                    Text("Using the default (\(loaded)); \(problem.id) couldn't be loaded: \(problem.reason)")
+                        .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                }
                 if let bytes = snapshot.helperBytes, bytes > 0 {
                     Text("Helper memory: \(Int64(bytes).formatted(.byteCount(style: .memory)))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
             .multilineTextAlignment(.trailing)
+        } else if let problem = model.cleanupProblem {
+            Text(problem).foregroundStyle(.red)
         } else {
             Text("Starting…").foregroundStyle(.secondary)
         }

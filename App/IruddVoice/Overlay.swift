@@ -64,8 +64,8 @@ private struct OverlayView: View {
             case .transcript:
                 if model.activity == .hearing {
                     TranscriptBubble(text: model.liveText, state: .hearing)
-                } else if let finished = model.finished, let pasted = finished.pasted {
-                    HeardAndPasted(heard: finished.heard, pasted: pasted, outcome: finished.outcome)
+                } else if let result = model.finished?.result {
+                    ThoughtOutcome(result: result)
                 } else {
                     TranscriptBubble(text: model.finished?.heard ?? "", state: .cleaning)
                 }
@@ -119,19 +119,28 @@ private struct TranscriptBubble: View {
 }
 
 /// After a paste: what was heard, with the words cleanup removed struck
-/// out, above what was pasted.
-private struct HeardAndPasted: View {
-    let heard: String
-    let pasted: String
-    let outcome: CleanupOutcome?
+/// out, above what was pasted. When the heard text itself was used, it's
+/// shown once with the reason in plain words.
+private struct ThoughtOutcome: View {
+    let result: FinishedThought.Result
 
     var body: some View {
-        let words = WordDiff.compare(heard: heard, pasted: pasted)
         VStack(alignment: .leading, spacing: 6) {
-            row("Heard", Self.text(words.heard, changed: { $0.strikethroughStyle = .single; $0.foregroundColor = .secondary }))
-            row("Pasted", Self.text(words.pasted, changed: { $0.foregroundColor = .accentColor }))
-            if let outcome, outcome != .cleaned {
-                Text("Cleanup didn't pass (\(outcome.rawValue)), so what was heard was pasted.")
+            if let reason = result.rawReason {
+                Text("\(result.waiting ? "Waiting" : "Pasted") as heard: \(reason)")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(result.text).lineLimit(4).truncationMode(.head)
+            } else {
+                row("Heard", Self.text(result.heardWords) {
+                    $0.strikethroughStyle = .single
+                    $0.foregroundColor = .secondary
+                })
+                row(result.waiting ? "Waiting" : "Pasted", Self.text(result.textWords) {
+                    $0.foregroundColor = .accentColor
+                })
+            }
+            if result.waiting {
+                Text("Not pasted: the text box changed. It's waiting in the menu.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -143,7 +152,7 @@ private struct HeardAndPasted: View {
 
     private func row(_ label: String, _ text: AttributedString) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 44, alignment: .leading)
+            Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 50, alignment: .leading)
             Text(text)
                 .lineLimit(3)
                 .truncationMode(.head)

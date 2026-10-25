@@ -32,7 +32,7 @@ One SQLite file holds everything the app records:
 | `dataset_days` | Which split (train, selection, test) each recording day belongs to; test days never move |
 | `models` | Trained cleanup models and their manifests and eval reports |
 | `active_model` | The one active model and the previous one, for rollback |
-| `events` | The app's log: saves, recognition results and timings, failures, mic changes. `irudd-voice events` prints it |
+| `events` | The app's log: saves, recognition results and timings, failures, mic changes, and cleanup (category `cleanup`: per thought, the model, time and pieces, or why the raw text was pasted, which hard check failed on which piece and what the model said; also model loads and unloads). `irudd-voice events` prints it |
 | `app_state` | Small key/value settings shared by app and CLI |
 
 ### `chunks`
