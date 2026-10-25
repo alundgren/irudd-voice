@@ -24,6 +24,7 @@ from datetime import date
 from pathlib import Path
 
 from . import prompt as cleanup_prompt
+from .drafter import add_drafter
 from .generation import END_OF_TURN_TOKENS, package_version, read_jsonl
 from .models import (
     DEFAULT_MODELS_DIR,
@@ -304,6 +305,9 @@ def train(
         try:
             started = time.perf_counter()
             fuse_and_save(model, tokenizer, config, source, staging, base_weights)
+            # mlx-lm's save keeps only the text model; the drafter's target
+            # class needs the vision tower back, and the folder its drafter.
+            drafter = add_drafter(staging, cand, log=log)
             timings["fuse_seconds"] = round(time.perf_counter() - started, 1)
             training = {
                 "method": "lora",
@@ -324,7 +328,7 @@ def train(
                 **(extra_training or {}),
             }
             manifest = write_manifest(staging, model_id, cand, prompt_version=cleanup_prompt.load()["version"],
-                                      training=training)
+                                      training=training, drafter=drafter)
             install_folder(staging, target)
         finally:
             shutil.rmtree(staging, ignore_errors=True)

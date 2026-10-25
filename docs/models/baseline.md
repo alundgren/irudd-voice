@@ -23,7 +23,7 @@ the one with the fewest failures, and this file says so.
 
 | Candidate | Questions failing (of 40) | Transcripts failing (of 50) | Warm 50-word p50 / p90 (Swift) | Runs ≤ 2 s | Peak memory | Passes |
 | --- | --- | --- | --- | --- | --- | --- |
-| **gemma-4-e2b-base-q4** | **0** | **4** (numbers 3, negation 1, new_words 1) | **1.22 / 1.39 s** | **10/10** | **3.52 GB** | **yes** |
+| **gemma-4-e2b-base-q4** | **0** | **4** (numbers 3, negation 1, new_words 1) | **1.22 / 1.39 s; with its drafter 0.39 / 0.43 s** | **10/10** | **3.52 GB; 3.68 GB with the drafter** | **yes** |
 | qwen3.5-2b-base-q4 | 4 (question 2, new_words 2) | 6 (numbers 6, negation 2) | 0.84 / 0.87 s | 10/10 | 1.98 GB | no: fails on questions, and 6 > 5 transcripts |
 | qwen3.5-4b-base-q4 | 1 (new_words 1) | 3 | 2.11 / 2.25 s | 1/10 | 3.46 GB | no: too slow, and 1 question failure |
 
@@ -40,6 +40,16 @@ item, so the counts above still hold.
 **Default: `gemma-4-e2b-base-q4`** (google/gemma-4-E2B-it at revision
 3e22461f65e89153144f8adb70e3b8c2cc9845a7). It is the only candidate that
 passes. Its 10-minute soak held p90 at 1.36 s.
+
+**Speed since 2026-10-25 (evening):** the app runs this model with Google's
+assistant drafter (`google/gemma-4-E2B-it-assistant`, 3 draft tokens),
+which the folder now includes. A warm 50-word cleanup takes 0.39 s (p90
+0.43 s) instead of about 1 s, a 20-word one 0.22 s, and the 10-minute soak
+held p90 at 0.65 s. Peak memory is 3.68 GB. The pass counts are unchanged
+(0 question failures, 4 transcripts). See `docs/models/speculative.md`. The
+pick doesn't change: with its MTP head, Qwen3.5 4B meets the speed bar
+(1.81 / 1.90 s) but still fails one question, and Qwen3.5 2B still fails
+3–4 questions and 6 transcripts.
 
 Its transcript failures are mostly spoken corrections the model resolved
 wrongly ("fifteen seconds no fifty seconds" kept both). The hard checks catch

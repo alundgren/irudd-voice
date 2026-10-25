@@ -31,8 +31,15 @@ uv run --group ml irudd-voice parity-reference <model-folder> --out tokens.json
   the Hugging Face cache, converts it with mlx-lm (text only, 4-bit, group
   64) into `<models-dir>/<candidate>-base-q4/` and writes `manifest.json`
   (shared/manifest.schema.md). An existing folder is reused if it verifies
-  and was built from the same pinned snapshot. Candidates: `qwen3.5-2b`,
-  `gemma-4-e2b`, `qwen3.5-4b`.
+  and was built from the same pinned snapshot and drafter. Candidates:
+  `qwen3.5-2b`, `gemma-4-e2b`, `qwen3.5-4b`.
+- `gemma-4-e2b` also gets its drafter, Google's
+  `gemma-4-E2B-it-assistant` at a pinned revision, in `drafter/` and named
+  by the manifest's `drafter` field. The app uses it for speculative
+  decoding (docs/models/speculative.md). Because that code path needs
+  Gemma's vision tower, the folder also holds `model-vision.safetensors`
+  (bf16, 340 MB) and `vision_config`. The folder is 2.9 GB instead of 2.5 GB.
+  `--force` rebuilds a folder prepared before the drafter existed.
 - `models prepare` records the folder in the `models` table of the app's
   database (if the app has created it; otherwise it says so and skips it).
   `--db PATH` uses another database. `models register <folder>` verifies a
@@ -41,7 +48,9 @@ uv run --group ml irudd-voice parity-reference <model-folder> --out tokens.json
 - `train --tiny` trains LoRA on the bf16 weights (the 4-bit folder if bf16
   wouldn't fit in 60% of memory: text weights plus the non-embedding weights
   again), fuses, quantizes and writes
-  `<candidate>-tiny-<date>/` with a `training` block in its manifest.
+  `<candidate>-tiny-<date>/` with a `training` block in its manifest. Like
+  `models prepare`, it adds the candidate's drafter (and Gemma's vision
+  tower) after fusing, so trained Gemma folders decode speculatively too.
 - `eval` runs the fixed sets in `evals/` through the shared prompt, the
   reply parser and the hard checks, and scores transcripts against their
   expected output.

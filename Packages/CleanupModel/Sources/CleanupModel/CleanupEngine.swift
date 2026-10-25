@@ -34,10 +34,10 @@ public struct GenerationResult: Sendable {
 /// model that guesses the next few tokens, which the cleanup model then
 /// checks in one forward pass. Greedy checking keeps the tokens the model
 /// would have picked itself.
-public struct Drafter: Sendable {
-    /// A drafter folder: Gemma 4's assistant (model_type gemma4_assistant)
-    /// or Qwen3.5's own multi-token head (model_type qwen3_5, `mtp.*`
-    /// weights; see scripts/make-drafter.py).
+public struct Drafter: Sendable, Equatable {
+    /// A drafter folder: Gemma 4's assistant (model_type gemma4_assistant,
+    /// the `drafter/` folder a manifest names) or Qwen3.5's own multi-token
+    /// head (model_type qwen3_5, `mtp.*` weights; see scripts/make-drafter.py).
     public var folder: URL
     /// Tokens drafted per round. mlx-swift-lm caps Qwen3.5's head at 1.
     /// 0 loads the model the way the drafter needs it but generates one
@@ -49,6 +49,17 @@ public struct Drafter: Sendable {
         self.folder = folder
         self.draftTokens = draftTokens
     }
+}
+
+/// Which drafter `CleanupEngine.load` uses.
+public enum DrafterChoice: Sendable {
+    /// The drafter the manifest names, or none (what the app uses).
+    /// `draftTokens` replaces the manifest's count.
+    case fromManifest(draftTokens: Int? = nil)
+    /// Another drafter folder (experiments; docs/models/speculative.md).
+    case folder(Drafter)
+    /// One token at a time with the model's usual class, ignoring the manifest.
+    case off
 }
 
 /// How long loading took, step by step.
@@ -86,7 +97,8 @@ public actor CleanupEngine: CleanupBackend {
     public private(set) var folder: URL?
     private var context: ModelContext?
     private var drafterModel: (any MTPDrafterModel)?
-    private var draftTokens = 0
+    /// The loaded drafter, or nil when the model decodes one token at a time.
+    public private(set) var drafter: Drafter?
     /// Generation stops at these: the eos IDs from config.json and
     /// generation_config.json, the tokenizer's eos, and the chat template's
     /// end-of-turn token. Same rule as the Python CLI (generation.py).
@@ -107,11 +119,13 @@ public actor CleanupEngine: CleanupBackend {
 
     /// Loads `folder`. Reads the manifest first and refuses the folder if it's
     /// missing, has an unknown schema, or was trained on another prompt
-    /// version; with `verify`, also checks every file's checksum. Then runs a
-    /// one-token warm-up so the first cleanup doesn't pay for Metal setup.
+    /// version; with `verify`, also checks every file's checksum (the
+    /// drafter's too). When the manifest names a drafter, loads it as well, and
+    /// cleanups use speculative decoding. Then runs a one-token warm-up so the
+    /// first cleanup doesn't pay for Metal setup.
     @discardableResult
     public func load(folder: URL, expectedID: String? = nil, verify: Bool = true,
-                     drafter: Drafter? = nil) async throws -> LoadTimings {
+                     drafter: DrafterChoice = .fromManifest()) async throws -> LoadTimings {
         try await load(folder: folder, expectedID: expectedID, verify: verify, drafter: drafter,
                        order: sequence.next).timings
     }
@@ -121,8 +135,8 @@ public actor CleanupEngine: CleanupBackend {
         return LoadedModel(id: id, seconds: timings.totalSeconds)
     }
 
-    private func load(folder: URL, expectedID: String?, verify: Bool, drafter: Drafter? = nil, order: UInt64)
-        async throws -> (id: String, timings: LoadTimings)
+    private func load(folder: URL, expectedID: String?, verify: Bool, drafter choice: DrafterChoice = .fromManifest(),
+                      order: UInt64) async throws -> (id: String, timings: LoadTimings)
     {
         guard sequence.start(order) else { throw CleanupBackendError.superseded }
         dropModel()
@@ -135,6 +149,14 @@ public actor CleanupEngine: CleanupBackend {
             }
             if verify {
                 try manifest.verify(folder: folder)
+            }
+        }
+        let drafter: Drafter? = switch choice {
+        case .off: nil
+        case .folder(let drafter): drafter
+        case .fromManifest(let count):
+            manifest.drafter.flatMap { entry in
+                manifest.drafterFolder(in: folder).map { Drafter(folder: $0, draftTokens: count ?? entry.draftTokens) }
             }
         }
         let start = clock.now
@@ -157,7 +179,7 @@ public actor CleanupEngine: CleanupBackend {
         }
         self.context = context
         self.drafterModel = drafterModel
-        self.draftTokens = drafter?.draftTokens ?? 0
+        self.drafter = drafter
         self.stopTokens = stops
         self.manifest = manifest
         self.folder = folder
@@ -237,6 +259,7 @@ public actor CleanupEngine: CleanupBackend {
     private func dropModel() {
         context = nil
         drafterModel = nil
+        drafter = nil
         manifest = nil
         folder = nil
         stopTokens = []
@@ -261,7 +284,9 @@ public actor CleanupEngine: CleanupBackend {
             error: result.timedOut ? "Cleanup passed its deadline." : nil)
     }
 
-    /// Greedy decoding with the chat template and `chat_template_options`,
+    /// Greedy decoding with the chat template and `chat_template_options`
+    /// (speculative with a drafter: the model checks the drafted tokens and
+    /// keeps the ones it would pick itself),
     /// stopping at an end-of-turn/eos token, `max_tokens`, or `deadline`
     /// (checked before the prompt and after every token; the prompt's own
     /// forward pass can't be interrupted).
@@ -289,10 +314,10 @@ public actor CleanupEngine: CleanupBackend {
         let start = clock.now
         let input = LMInput(tokens: MLXArray(promptTokens))
         var result: GenerationResult
-        if let drafterModel, draftTokens > 0 {
+        if let drafterModel, let drafter, drafter.draftTokens > 0 {
             var iterator = try MTPSpeculativeTokenIterator(
                 input: input, mainModel: context.model, drafter: drafterModel, parameters: parameters,
-                blockSize: draftTokens + 1)
+                blockSize: drafter.draftTokens + 1)
             result = run(&iterator, deadline: deadline, clock: clock, start: start)
             result.draftedTokens = iterator.proposedCount
             result.acceptedTokens = iterator.acceptedCount

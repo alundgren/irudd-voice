@@ -15,9 +15,12 @@ import MLX
 //   thought-check [--models DIR] [--model-id ID]   (the app's cleanup path, see below)
 //
 // Common options: --prompt FILE (default shared/cleanup-prompt.json),
-// --no-verify (skip manifest checksums). generate, eval and bench also take
-// --draft DIR [--draft-tokens 3]: speculative decoding with a drafter folder
-// (docs/models/speculative.md).
+// --no-verify (skip manifest checksums). A model folder whose manifest names
+// a drafter decodes speculatively, as in the app (docs/models/speculative.md).
+// generate, eval and bench also take --draft-tokens N (replaces the
+// manifest's count; 0 loads the drafter's model class without drafting),
+// --draft DIR (another drafter folder) and --no-draft (one token at a time,
+// ignoring the manifest).
 
 let repoFolder = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()  // voice-model-tool
@@ -41,7 +44,7 @@ struct Options {
         while let argument = rest.popFirst() {
             guard argument.hasPrefix("--") else { throw ToolError("unexpected argument \(argument)") }
             let name = String(argument.dropFirst(2))
-            if ["no-verify"].contains(name) {
+            if ["no-verify", "no-draft"].contains(name) {
                 flags.insert(name)
             } else {
                 guard let value = rest.popFirst() else { throw ToolError("--\(name) needs a value") }
@@ -115,11 +118,23 @@ func percentile(_ values: [Double], _ p: Double) -> Double {
 
 func round3(_ value: Double) -> Double { (value * 1000).rounded() / 1000 }
 
-func drafter(_ options: Options) throws -> Drafter? {
-    guard let folder = options.values["draft"] else { return nil }
-    let count = try options.int("draft-tokens", default: 3)
-    guard count >= 0 else { throw ToolError("--draft-tokens must be 0 or more") }
-    return Drafter(folder: URL(fileURLWithPath: folder), draftTokens: count)
+func drafter(_ options: Options) throws -> DrafterChoice {
+    let count = try options.values["draft-tokens"].map { _ in try options.int("draft-tokens", default: 3) }
+    if let count, count < 0 { throw ToolError("--draft-tokens must be 0 or more") }
+    if options.flags.contains("no-draft") {
+        guard options.values["draft"] == nil, count == nil else {
+            throw ToolError("--no-draft can't be combined with --draft or --draft-tokens")
+        }
+        return .off
+    }
+    guard let folder = options.values["draft"] else { return .fromManifest(draftTokens: count) }
+    return .folder(Drafter(folder: URL(fileURLWithPath: folder), draftTokens: count ?? 3))
+}
+
+/// " draft drafter x3" for runner labels, or "" without a drafter.
+func drafterLabel(_ engine: CleanupEngine) async -> String {
+    guard let drafter = await engine.drafter else { return "" }
+    return " draft \(drafter.folder.lastPathComponent) x\(drafter.draftTokens)"
 }
 
 /// "drafted 120, accepted 96 (80%)" for a run with a drafter.
@@ -192,7 +207,7 @@ func generate(_ options: Options) async throws {
         prompt_version: prompt.version, inputs_sha256: try sha256(inputs),
         chat_template_options: prompt.chatTemplateOptions, max_new_tokens: maxTokens,
         stop_token_ids: await engine.stopTokens.sorted(),
-        runner: "mlx-swift-lm 3.32.3" + (options.values["draft"].map { " draft \(URL(fileURLWithPath: $0).lastPathComponent)" } ?? ""),
+        runner: "mlx-swift-lm 3.32.3" + (await drafterLabel(engine)),
         items: items), to: out)
     log("wrote \(out.path)")
 }
@@ -366,7 +381,7 @@ func evaluate(_ options: Options) async throws -> Bool {
     let manifest = try require(await engine.manifest)
     let report = EvalReport(
         model_id: manifest.id, set: set, prompt_version: prompt.version,
-        runner: "swift (mlx-swift-lm 3.32.3)" + (options.values["draft"].map { ", draft \(URL(fileURLWithPath: $0).lastPathComponent)" } ?? ""),
+        runner: "swift (mlx-swift-lm 3.32.3)" + (await drafterLabel(engine)),
         items_total: items.count, items_failed: failed, reply_failures: replyFailures,
         check_failures: checkFailures, exact_matches: exact, items: items)
     if let out = options.values["out"] {
@@ -376,7 +391,7 @@ func evaluate(_ options: Options) async throws -> Bool {
         + (exact.map { ", \($0) exact matches" } ?? "")
         + (replyFailures.isEmpty ? "" : ", reply failures \(replyFailures)")
         + (checkFailures.isEmpty ? "" : ", check failures \(checkFailures)")
-        + (options.values["draft"] == nil ? "" : "; " + draftSummary(drafted: drafted, accepted: accepted, stopped: stopped)))
+        + (await engine.drafter == nil ? "" : "; " + draftSummary(drafted: drafted, accepted: accepted, stopped: stopped)))
     return failed == 0
 }
 
@@ -434,8 +449,9 @@ func bench(_ options: Options) async throws {
     let inputs = try readJSONL(try options.url("inputs", default: repoFolder.appendingPathComponent("evals/bench.jsonl")))
     guard !inputs.isEmpty else { throw ToolError("no bench inputs") }
     let engine = try makeEngine(options)
-    let draft = try drafter(options)
-    let cold = try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"), drafter: draft)
+    let cold = try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"),
+                                     drafter: drafter(options))
+    let draft = await engine.drafter
     log(String(format: "cold: verify %.2f s, load %.2f s, warm-up %.2f s", cold.verifySeconds, cold.loadSeconds, cold.warmupSeconds))
 
     var warm: [Double] = []

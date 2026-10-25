@@ -23,6 +23,9 @@ DEFAULT_MODELS_DIR = Path.home() / "Library" / "Application Support" / "irudd-vo
 MANIFEST_SCHEMA = 1
 QUANTIZATION = {"bits": 4, "group_size": 64}
 ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9.-]*")
+# The drafter's folder inside a model folder: one plain name, so it can't
+# leave the folder or be skipped as a dot path.
+DRAFTER_FOLDER_PATTERN = ID_PATTERN
 ML_HINT = "the model tools need the ml dependency group: uv run --group ml irudd-voice ..."
 
 
@@ -33,11 +36,27 @@ def valid_id(model_id: str) -> bool:
 
 
 @dataclass(frozen=True)
+class Drafter:
+    """A pinned drafter for speculative decoding (docs/models/speculative.md),
+    copied into `<model folder>/<folder>/`."""
+    repo: str
+    revision: str
+    draft_tokens: int
+    folder: str = "drafter"
+
+    def entry(self) -> dict:
+        """The manifest's `drafter` field."""
+        return {"repo": self.repo, "revision": self.revision, "folder": self.folder,
+                "draft_tokens": self.draft_tokens}
+
+
+@dataclass(frozen=True)
 class Candidate:
     id: str
     family: str
     repo: str
     revision: str
+    drafter: Drafter | None = None
 
     @property
     def base_id(self) -> str:
@@ -50,7 +69,10 @@ CANDIDATES = {
     c.id: c
     for c in (
         Candidate("qwen3.5-2b", "qwen3_5", "Qwen/Qwen3.5-2B", "15852e8c16360a2fea060d615a32b45270f8a8fc"),
-        Candidate("gemma-4-e2b", "gemma4", "google/gemma-4-E2B-it", "3e22461f65e89153144f8adb70e3b8c2cc9845a7"),
+        # Google's assistant drafter (Apache-2.0): 0.39 s instead of about 1 s
+        # for 50 words, docs/models/speculative.md.
+        Candidate("gemma-4-e2b", "gemma4", "google/gemma-4-E2B-it", "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+                  Drafter("google/gemma-4-E2B-it-assistant", "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df", 3)),
         Candidate("qwen3.5-4b", "qwen3_5", "Qwen/Qwen3.5-4B", "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a"),
     )
 }
@@ -138,9 +160,12 @@ def write_manifest(
     *,
     prompt_version: str | None = None,
     training: dict | None = None,
+    drafter: dict | None = None,
     created_at: str | None = None,
 ) -> dict:
-    """Hashes every file in the folder and writes manifest.json (schema 1)."""
+    """Hashes every file in the folder and writes manifest.json (schema 1).
+    `drafter` is the manifest's drafter field (Drafter.entry()) when the
+    folder holds one."""
     if not valid_id(model_id):
         raise ModelError(f"model id {model_id!r} must match {ID_PATTERN.pattern} without '..'")
     if (training is None) != (prompt_version is None):
@@ -148,6 +173,8 @@ def write_manifest(
     files = {name: sha256_file(folder / name) for name in model_files(folder)}
     if "tokenizer.json" not in files:
         raise ModelError(f"{folder} has no tokenizer.json")
+    if drafter is not None and (problem := drafter_problem(drafter, files)):
+        raise ModelError(problem)
     manifest = {
         "schema": MANIFEST_SCHEMA,
         "id": model_id,
@@ -162,10 +189,31 @@ def write_manifest(
         "quantization": dict(QUANTIZATION),
         "files": files,
         "training": training,
+        "drafter": drafter,
         "created_at": created_at or utc_now(),
     }
     (folder / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return manifest
+
+
+def drafter_problem(drafter, files: dict) -> str | None:
+    """What's wrong with a manifest's `drafter` field, or None: it needs a
+    repo, a revision, a plain folder name whose config.json is in `files`,
+    and at least 1 draft token. Same rule as the app's ModelManifest."""
+    if not isinstance(drafter, dict):
+        return "drafter must be an object or null"
+    for key in ("repo", "revision", "folder"):
+        if not isinstance(drafter.get(key), str) or not drafter[key]:
+            return f"drafter.{key} must be a non-empty string"
+    folder = drafter["folder"]
+    if DRAFTER_FOLDER_PATTERN.fullmatch(folder) is None or ".." in folder:
+        return f"drafter.folder {folder!r} must match {DRAFTER_FOLDER_PATTERN.pattern} without '..'"
+    tokens = drafter.get("draft_tokens")
+    if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens < 1:
+        return "drafter.draft_tokens must be a whole number of at least 1"
+    if f"{folder}/config.json" not in files:
+        return f"drafter folder {folder}/ has no config.json in the manifest"
+    return None
 
 
 def read_manifest(folder: Path) -> dict:
@@ -206,11 +254,14 @@ def verify(folder: Path) -> list[str]:
         problems.append("tokenizer_sha256 does not match tokenizer.json")
     if (folder / "tokenizer.json").exists() and manifest.get("chat_template_sha256") != chat_template_sha256(folder):
         problems.append("chat_template_sha256 does not match the chat template")
+    if manifest.get("drafter") is not None and (problem := drafter_problem(manifest["drafter"], files)):
+        problems.append(problem)
     return problems
 
 
-def snapshot(cand: Candidate) -> Path:
-    """The pinned Hugging Face snapshot, downloaded into the HF cache if needed."""
+def snapshot(cand: Candidate | Drafter) -> Path:
+    """The pinned Hugging Face snapshot of a candidate or a drafter,
+    downloaded into the HF cache if needed."""
     try:
         from huggingface_hub import snapshot_download
     except ImportError as error:
@@ -247,15 +298,22 @@ def install_folder(staging: Path, target: Path) -> None:
 
 def prepare(cand: Candidate, models_dir: Path = DEFAULT_MODELS_DIR, *, force: bool = False, log=print) -> tuple[Path, dict]:
     """Pinned snapshot → mlx-lm convert (text only) → 4-bit, group 64 →
-    `<models_dir>/<candidate>-base-q4/` with a manifest."""
+    `<models_dir>/<candidate>-base-q4/` with a manifest. A candidate with a
+    drafter also gets the drafter and what its model class needs
+    (drafter.add_drafter)."""
     target = models_dir / cand.base_id
     if target.exists() and not force:
         problems = verify(target)
         if not problems:
             manifest = read_manifest(target)
             built_from = (manifest.get("base_repo"), manifest.get("base_revision"), manifest.get("family"))
+            drafter = manifest.get("drafter")
+            wanted = cand.drafter.entry() if cand.drafter else None
             if built_from != (cand.repo, cand.revision, cand.family):
                 problems = [f"it was built from {built_from[0]}@{built_from[1]}, not {cand.repo}@{cand.revision}"]
+            elif drafter != wanted:
+                problems = [f"its drafter is {drafter and drafter['repo'] + '@' + drafter['revision']}, "
+                            f"not {wanted and wanted['repo'] + '@' + wanted['revision']}"]
         if problems:
             raise ModelError(f"{target} exists but can't be reused ({problems[0]}); run again with --force")
         log(f"{target} is already prepared and verifies")
@@ -274,7 +332,10 @@ def prepare(cand: Candidate, models_dir: Path = DEFAULT_MODELS_DIR, *, force: bo
         convert(str(source), str(staging), quantize=True, q_group_size=QUANTIZATION["group_size"],
                 q_bits=QUANTIZATION["bits"])
         finish_folder(staging, source)
-        manifest = write_manifest(staging, cand.base_id, cand)
+        from .drafter import add_drafter
+
+        drafter = add_drafter(staging, cand, log=log)
+        manifest = write_manifest(staging, cand.base_id, cand, drafter=drafter)
         install_folder(staging, target)
     finally:
         shutil.rmtree(staging, ignore_errors=True)

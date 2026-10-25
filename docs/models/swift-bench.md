@@ -10,6 +10,10 @@ have been running. Speed and evals were measured before the deadline check
 and the `<|endoftext|>` stop token were added; neither changes a normal
 cleanup's work.
 
+Since then the default Gemma folder has a drafter, and the helper decodes
+it speculatively. See "Gemma with its drafter" below and
+`docs/models/speculative.md`. The tables up to there are the plain runs.
+
 ## Speed and memory
 
 Warm runs: 10 cleanups of the fixed 50-word transcripts in
@@ -96,3 +100,27 @@ three base models and the first tiny model), so pinning MLX 0.32.2 wouldn't
 help. Feeding the prompt the way
 mlx-lm does (all tokens but the last, then the last) matched 75 of 80, so
 the engine keeps mlx-swift-lm's one forward pass.
+
+## Gemma with its drafter
+
+Measured on 2026-10-25, later the same day, on the re-prepared
+`gemma-4-e2b-base-q4` folder: the same text weights, plus Google's assistant
+drafter (3 draft tokens) and the vision tower that mlx-swift-lm's MLXVLM
+Gemma 4 class needs. The folder is 2.9 GB instead of 2.5 GB. "Plain" is
+`--no-draft`, measured in the same session.
+
+| Run | Warm p50 | Warm p90 | Runs ≤ 2 s | 20 words p50 / p90 | Cold load (verify + load + warm-up) | Peak memory | Soak (10 min): cleanups, p50 / p90, slowest, slowest in last minute |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| gemma-4-e2b-base-q4 with drafter | 0.39 s | 0.43 s | 10/10 | 0.22 / 0.23 s | 2.44 s (1.21 + 1.14 + 0.09) | 3.68 GB | 1,034, 0.58 / 0.65 s, 0.79 s, 0.67 s |
+| gemma-4-e2b-base-q4 plain | 0.97 s | 1.00 s | 10/10 | 0.54 / 0.55 s | 2.31 s (1.20 + 1.02 + 0.09) | 3.53 GB | – |
+
+- MLX's own peak with the drafter is 3.24 GB (3.10 GB plain). The vision
+  tower is loaded but never run.
+- Evals through the Swift path with the drafter: questions 40/40, transcripts
+  46/50 (numbers 3, negation 1, new_words 1), the same as plain.
+- Parity (`tests/model-parity.sh` against a Python reference regenerated for
+  the new folder): prompt tokens 20/20; generated tokens 19/20 identical. p13
+  differs at token 16 (`."` vs `"}`, gap 0.28), which passes the tie-aware
+  rule. Plain Swift differed on p07 and p13.
+- `xpc-check` and `thought-check` pass with the drafter.
+

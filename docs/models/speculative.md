@@ -9,7 +9,9 @@ tokens) cleans a 50-word thought in **0.39 s** instead of **0.97–1.20 s**,
 about 2.5 to 3 times faster, with the same eval pass counts. Qwen3.5's
 built-in multi-token head helps much less (about 15%). The output is
 **not** always token-identical to plain greedy: 1 to 4 items in 110 change
-at one near-tied token. The app is not wired up yet (see "App wiring").
+at one near-tied token. The project owner accepted that under the same
+tie-aware rule as Swift–Python parity, and the app now uses the drafter for
+Gemma (see "In the app").
 
 ## How it works
 
@@ -25,7 +27,7 @@ fit our candidates:
 
 - **Gemma 4 E2B:** `google/gemma-4-E2B-it-assistant` at revision
   `2d874ef7d29f9a30599a1e4b3c1cbc9595f005df` (Apache-2.0, 78M parameters,
-  190 MB bf16). It reads the target's own K/V cache, so it is very cheap.
+  158 MB bf16). It reads the target's own K/V cache, so it is very cheap.
   mlx-swift-lm only feeds it from **MLXVLM's** Gemma 4 class, not the MLXLLM
   class the app uses today. That class needs `vision_config` and the vision
   tower's weights in the model folder (168M parameters, 340 MB bf16), even
@@ -35,15 +37,19 @@ fit our candidates:
   at **1 draft token per round** (`Qwen35MTPDraftModel.maximumBlockSize` is
   2), so `--draft-tokens 2/3/4` all run as 1.
 
-`scripts/make-drafter.py` builds the folders: `qwen-mtp` writes a Qwen
-drafter folder (bf16, or 4-bit with `--bits 4`), and `gemma-target` copies a
-Gemma base folder and adds the vision tower so MLXVLM can load it. The Gemma
-assistant loads straight from its Hugging Face snapshot.
+For the experiment, a test copy of the Gemma folder got the vision tower
+added, and the assistant loaded straight from its Hugging Face snapshot.
+`irudd-voice models prepare gemma-4-e2b` now builds that folder (see "In the
+app"). `scripts/make-drafter.py qwen-mtp` writes a Qwen drafter folder
+(bf16, or 4-bit with `--bits 4`).
 
-`voice-model-tool generate|eval|bench` take `--draft DIR` and
-`--draft-tokens N`. `--draft-tokens 0` loads the model the way the drafter
-needs it (for Gemma, the MLXVLM class) but generates one token at a time.
-That separates "different model class" from "drafting" when outputs differ.
+`voice-model-tool generate|eval|bench` use the drafter a folder's manifest
+names, like the app. `--draft DIR` uses another drafter folder,
+`--draft-tokens N` replaces the count, and `--no-draft` decodes one token at
+a time with the usual class. `--draft-tokens 0` loads the model the way the
+drafter needs it (for Gemma, the MLXVLM class) but generates one token at a
+time. That separates "different model class" from "drafting" when outputs
+differ.
 
 ## Does the output stay the same?
 
@@ -153,52 +159,69 @@ their speed:
 | Option | Passes the rule | 50 words p50 / p90 |
 | --- | --- | --- |
 | Gemma 4 E2B + assistant, 3 draft tokens | yes (0 questions, 4 transcripts) | 0.39 / 0.44 s |
-| Gemma 4 E2B, no drafter (today) | yes (0 questions, 4 transcripts) | 0.97–1.20 / 1.01–1.37 s |
+| Gemma 4 E2B, no drafter (before) | yes (0 questions, 4 transcripts) | 0.97–1.20 / 1.01–1.37 s |
 | Qwen3.5 4B + MTP | no: 1 question failure, though it now meets the speed bar (9/10) | 1.81 / 1.90 s |
 | Qwen3.5 2B ± MTP | no: 3–4 question failures and 6 transcripts | 0.83 / 0.95 s |
 
 The output differences are near-ties of the kind the tie-aware parity rule
-already accepts. They are not exact, though, so the project owner should
-decide whether drafted output counts as "the same" before it ships.
+already accepts. The project owner accepted them on 2026-10-25 under that
+rule (Swift's token in Python's top 3 and within 0.5), and chose this option.
 
-## App wiring: not done
+## In the app
 
-The brief asked for app wiring only when outputs are identical and the
-change is clean. Neither holds:
+- **Manifest:** an optional `drafter` field names the drafter's repo, pinned
+  revision, subfolder and draft tokens (`shared/manifest.schema.md`). Its
+  files are hashed in `files` like the rest, so the first-load checksum pass
+  covers them.
+- **`irudd-voice models prepare gemma-4-e2b`** converts the model as before,
+  then adds the vision tower from the pinned snapshot
+  (`model-vision.safetensors`, bf16, copied byte for byte and listed in the
+  weight index, plus `vision_config` and `processor_config.json`) and the
+  assistant in `drafter/`. The text weights are byte-identical to the
+  earlier folder. The folder is 2.9 GB instead of 2.5 GB. A folder prepared
+  before the drafter existed needs `--force`.
+- **`train` and `train --tiny`** add the same files after fusing, so trained
+  Gemma folders decode speculatively too. A real `train --tiny gemma-4-e2b`
+  made a folder that verifies and drafts (91% / 82% of drafts accepted on
+  questions / transcripts), with the same pass counts as plain decoding.
+- **The helper** (CleanupEngine) loads the drafter when the manifest names
+  one, loads the model through MLXVLM, and decodes speculatively. Stop
+  tokens, `max_tokens` (hit_limit) and the deadline work as before. Without
+  a drafter, it loads and decodes exactly as it did.
+- Older app builds keep working with the new folder: they ignore the
+  `drafter` field, verify the extra files, and their MLXLLM class drops the
+  vision weights. They just don't draft.
+- The Qwen candidates are unchanged (no drafter).
 
-1. Outputs differ on 1–4 of 110 items (above). They are near-ties, but not
-   identical tokens.
-2. For Gemma, the drafter isn't just an extra folder. The model folder
-   itself must change: it needs `vision_config` and 340 MB of vision tower
-   weights, and must load through MLXVLM instead of MLXLLM. That changes
-   `irudd-voice models prepare`, the manifests of existing folders, and the
-   training output. `train` fuses LoRA through mlx-lm, which drops the
-   vision tower, so every trained model would need the tower added back.
-   It also changes plain greedy output on 5 of 110 items through the class
-   switch alone.
+### Re-verified on the real folder
 
-Wiring only the Qwen MTP head would be clean (a separate drafter folder,
-same model class), but no Qwen model passes the rule, so the app wouldn't
-use it.
+Same session, same folder; "plain" is `--no-draft` (the class and decoding
+the app used before).
 
-Ways forward, if the owner accepts near-tie differences:
-
-- Wire Gemma as it is: `models prepare` builds the MLXVLM folder (as
-  `scripts/make-drafter.py gemma-target` does) and fetches the pinned
-  assistant. The manifest gets an optional `drafter` entry, and training adds
-  the vision tower back after fusing.
-- Or first get mlx-swift-lm's MLXLLM Gemma 4 class to emit the drafter
-  state (an upstream change), so the folders stay as they are.
+| Check | With the drafter | Plain |
+| --- | --- | --- |
+| Parity (`tests/model-parity.sh`, app path, new Python reference) | 19/20 identical; p13 differs (`."` vs `"}`, gap 0.28): passes the tie-aware rule | – (18/20 before, `swift-bench.md`) |
+| Questions | 40/40 passed | 40/40 |
+| Transcripts | 46/50 (numbers 3, negation 1, new_words 1) | 46/50, same failures |
+| 50 words p50 / p90 | 0.39 / 0.43 s, 10/10 ≤ 2 s | 0.97 / 1.00 s (0.96 / 0.99 s run again) |
+| 20 words p50 / p90 | 0.22 / 0.23 s | 0.54 / 0.55 s |
+| Cold load: verify + load + warm-up | 1.21 + 1.14 + 0.09 s | 1.20 + 1.02 + 0.09 s |
+| Peak memory (footprint / MLX) | 3.68 / 3.24 GB | 3.53 / 3.10 GB |
+| Drafts accepted (50 words) | 88% | – |
+| 10-minute soak | 1,034 cleanups, p50 / p90 0.58 / 0.65 s, slowest 0.79 s | 477, 1.25 / 1.36 s (`swift-bench.md`) |
+| `xpc-check` | all ok; 3.34 GB resident | – |
+| `thought-check` | all ok; 458-word thought in 5 pieces of about 1.05 s each | – |
 
 ## Reproducing
 
 ```
+uv run --group ml irudd-voice models prepare gemma-4-e2b   # in cli/; --force over an older folder
 uv run --project cli --group ml python scripts/make-drafter.py qwen-mtp --candidate qwen3.5-2b --out DIR/qwen3.5-2b-mtp-q4 --bits 4
-uv run --project cli --group ml python scripts/make-drafter.py gemma-target --model MODELS/gemma-4-e2b-base-q4 --out DIR/gemma-4-e2b-base-q4-vlm
-hf download google/gemma-4-E2B-it-assistant --revision 2d874ef7d29f9a30599a1e4b3c1cbc9595f005df
 
-voice-model-tool bench --model DIR/gemma-4-e2b-base-q4-vlm --draft ASSISTANT_SNAPSHOT --draft-tokens 3
-voice-model-tool generate --model DIR/gemma-4-e2b-base-q4-vlm --draft ASSISTANT_SNAPSHOT --draft-tokens 3 --out drafted.json
-voice-model-tool generate --model DIR/gemma-4-e2b-base-q4-vlm --draft ASSISTANT_SNAPSHOT --draft-tokens 0 --out plain.json
+voice-model-tool bench --model MODELS/gemma-4-e2b-base-q4               # the drafter from the manifest
+voice-model-tool bench --model MODELS/gemma-4-e2b-base-q4 --no-draft    # plain, as before
+voice-model-tool generate --model MODELS/gemma-4-e2b-base-q4 --out drafted.json
+voice-model-tool generate --model MODELS/gemma-4-e2b-base-q4 --draft-tokens 0 --out plain.json
 voice-model-tool compare --reference plain.json --swift drafted.json
+voice-model-tool bench --model MODELS/qwen3.5-2b-base-q4 --draft DIR/qwen3.5-2b-mtp-q4 --draft-tokens 1
 ```

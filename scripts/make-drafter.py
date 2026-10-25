@@ -1,29 +1,23 @@
-"""Builds the folders the speculative decoding experiment needs
-(docs/models/speculative.md). Reads the pinned Hugging Face snapshots and the
-base model folders; writes only to --out.
+"""Builds Qwen3.5 MTP drafter folders for the speculative decoding
+experiment (docs/models/speculative.md). Reads the pinned Hugging Face
+snapshot; writes only to --out.
 
   uv run --project cli --group ml python scripts/make-drafter.py qwen-mtp \\
       --candidate qwen3.5-2b --out DIR [--bits 4]
-  uv run --project cli --group ml python scripts/make-drafter.py gemma-target \\
-      --model MODELS/gemma-4-e2b-base-q4 --out DIR/gemma-4-e2b-base-q4-vlm
 
-qwen-mtp: Qwen3.5's own multi-token head (the 15 `mtp.*` tensors, which
-mlx-lm's convert drops) as a drafter folder for mlx-swift-lm's
-Qwen35MTPDraftModel: config.json (model_type qwen3_5, no vision_config) and
-model.safetensors with the raw `mtp.*` weights. The norms stay as Hugging
-Face stores them; the Swift side adds the +1 for model_type qwen3_5. With
---bits 4 the linear layers are quantized (group 64) like the base folders.
+Qwen3.5's own multi-token head (the 15 `mtp.*` tensors, which mlx-lm's
+convert drops) as a drafter folder for mlx-swift-lm's Qwen35MTPDraftModel:
+config.json (model_type qwen3_5, no vision_config) and model.safetensors with
+the raw `mtp.*` weights. The norms stay as Hugging Face stores them; the
+Swift side adds the +1 for model_type qwen3_5. With --bits 4 the linear
+layers are quantized (group 64) like the base folders.
 
-gemma-target: mlx-swift-lm only feeds the Gemma 4 assistant drafter from its
-MLXVLM Gemma 4 class, which needs vision_config and the vision tower's
-weights. This copies a base folder's files, adds the snapshot's vision tower
-and embed_vision weights (bf16) as model-vision.safetensors, drops the
-weight index so both weight files load, and writes a manifest.
+Gemma's drafter is part of the app's folder: `irudd-voice models prepare
+gemma-4-e2b` builds it (cli/src/irudd_voice/drafter.py).
 """
 
 import argparse
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -72,32 +66,6 @@ def qwen_mtp(args) -> None:
     print(f"wrote {out}: {len(weights)} tensors from {cand.repo}@{cand.revision[:12]}")
 
 
-def gemma_target(args) -> None:
-    model = Path(args.model)
-    manifest = models.read_manifest(model)
-    cand = models.candidate_for(manifest)
-    source = models.snapshot(cand)
-    out = Path(args.out)
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
-    for name in models.model_files(model):
-        if name != "model.safetensors.index.json":
-            shutil.copy(model / name, out / name)
-    hf_config = json.loads((source / "config.json").read_text())
-    config = json.loads((model / "config.json").read_text())
-    config["vision_config"] = hf_config["vision_config"]
-    (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
-    vision = {k: v for k, v in snapshot_weights(source).items()
-              if k.startswith(("model.vision_tower.", "model.embed_vision."))}
-    mx.save_safetensors(str(out / "model-vision.safetensors"), vision, metadata={"format": "mlx"})
-    for name in ("processor_config.json", "preprocessor_config.json"):
-        if (source / name).exists():
-            shutil.copy(source / name, out / name)
-    models.write_manifest(out, out.name, cand)
-    print(f"wrote {out}: {len(vision)} vision tensors added")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -105,11 +73,8 @@ def main() -> None:
     qwen.add_argument("--candidate", required=True, choices=["qwen3.5-2b", "qwen3.5-4b"])
     qwen.add_argument("--out", required=True)
     qwen.add_argument("--bits", type=int, choices=[4, 8])
-    gemma = commands.add_parser("gemma-target")
-    gemma.add_argument("--model", required=True)
-    gemma.add_argument("--out", required=True)
     args = parser.parse_args()
-    {"qwen-mtp": qwen_mtp, "gemma-target": gemma_target}[args.command](args)
+    qwen_mtp(args)
 
 
 if __name__ == "__main__":
