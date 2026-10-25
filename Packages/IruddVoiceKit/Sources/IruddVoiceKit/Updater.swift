@@ -40,6 +40,8 @@ public actor Updater {
     public let cachesDir: String
     private let runner: CommandRunner
     private var target: String?
+    /// The branch `target` came from: the installed branch, or main if that branch is gone.
+    private var targetBranch: String?
 
     /// The app's own git checkout. In Application Support, so it's never
     /// in Documents, Desktop or Downloads (macOS asks before apps read those).
@@ -76,10 +78,19 @@ public actor Updater {
             guard clone.status == 0 else { return .failed("Couldn't download the source: \(clone.output)", log: nil) }
         }
 
-        let fetch = await git(["fetch", "--quiet", "origin", info.branch])
+        var branch = info.branch
+        var fetch = await git(["fetch", "--quiet", "origin", branch])
+        // A branch merged on GitHub is usually deleted, and its commits are
+        // on main by then, so follow main. `ls-remote` exits 2 only when the
+        // branch is really gone, not when the network is down.
+        if fetch.status != 0, branch != "main",
+           await git(["ls-remote", "--exit-code", "--heads", "origin", branch]).status == 2 {
+            branch = "main"
+            fetch = await git(["fetch", "--quiet", "origin", branch])
+        }
         guard fetch.status == 0 else { return .failed("Couldn't check for updates: \(fetch.output)", log: nil) }
         let remoteCommit = await git(["rev-parse", "FETCH_HEAD"]).output.trimmed
-        guard remoteCommit.count == 40 else { return .failed("Couldn't read the latest \(info.branch).", log: nil) }
+        guard remoteCommit.count == 40 else { return .failed("Couldn't read the latest \(branch).", log: nil) }
 
         if remoteCommit == info.commit {
             target = nil
@@ -89,12 +100,16 @@ public actor Updater {
         let behind = known ? await git(["merge-base", "--is-ancestor", info.commit, remoteCommit]).status == 0 : false
         guard behind else {
             target = nil
+            if branch != info.branch {
+                return .notOnBranch("\(info.branch) is gone from GitHub and this build (\(info.shortCommit)) isn't on main, so updates are off. Run ./install.sh once from main.")
+            }
             return .notOnBranch("This build (\(info.shortCommit)) isn't on \(info.branch) yet, so updates are off until \(info.branch) has it.")
         }
         let count = Int(await git(["rev-list", "--count", "\(info.commit)..\(remoteCommit)"]).output.trimmed) ?? 0
         let summaries = await git(["log", "--format=%s", "-5", "\(info.commit)..\(remoteCommit)"]).output
             .split(separator: "\n").map(String.init)
         target = remoteCommit
+        targetBranch = branch
         return .available(commit: remoteCommit, changes: count, summaries: summaries)
     }
 
@@ -111,7 +126,7 @@ public actor Updater {
         try? FileManager.default.createDirectory(atPath: cachesDir, withIntermediateDirectories: true)
         var environment = Self.environment
         environment["IRUDD_VOICE_SIGNING_IDENTITY"] = info.signingSHA1
-        environment["IRUDD_VOICE_BRANCH"] = info.branch
+        environment["IRUDD_VOICE_BRANCH"] = targetBranch ?? info.branch
         if let apps = info.appsDir { environment["IRUDD_VOICE_APPS_DIR"] = apps }
         let result = await runner.run("/bin/bash", [installScript, "--stage", stageDir], in: sourceDir,
                                       environment: environment, logTo: logPath)

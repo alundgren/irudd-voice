@@ -34,6 +34,7 @@ struct UpdaterTests {
             # Stand-in install.sh: --stage DIR makes a fake app unless BROKEN exists.
             [[ -e BROKEN ]] && { echo "main.swift:1: error: it broke"; exit 1; }
             mkdir -p "$2/irudd-voice.app" && echo staged > "$2/irudd-voice.app/marker"
+            echo "$IRUDD_VOICE_BRANCH" > "$2/irudd-voice.app/branch"
             echo "Staged $2/irudd-voice.app"
             """
         try! script.write(toFile: work + "/install.sh", atomically: true, encoding: .utf8)
@@ -46,9 +47,9 @@ struct UpdaterTests {
         return sh("git rev-parse HEAD", in: work)
     }
 
-    func install(commit: String) {
+    func install(commit: String, branch: String = "main") {
         try! FileManager.default.createDirectory(atPath: state, withIntermediateDirectories: true)
-        let info = InstallInfo(commit: commit, branch: "main", remote: remote, dirty: false,
+        let info = InstallInfo(commit: commit, branch: branch, remote: remote, dirty: false,
                                signingSHA1: String(repeating: "1", count: 40), appsDir: root + "/Applications")
         try! JSONEncoder().encode(info).write(to: URL(fileURLWithPath: state + "/install.json"))
     }
@@ -120,6 +121,48 @@ struct UpdaterTests {
         let restart = updater.restartCommand(stageDir: stageDir, pid: 4242)
         #expect(restart.arguments.suffix(4) == ["--activate", stageDir, "--wait-pid", "4242"])
         #expect(restart.environment["IRUDD_VOICE_APPS_DIR"] == root + "/Applications")
+    }
+
+    /// A build from a feature branch that was pushed, then deleted on the remote.
+    func installFromDeletedBranch(merged: Bool) -> String {
+        sh("git checkout --quiet -b feature && echo f >> feature.txt && git add . && git -c user.name=t -c user.email=t@t commit --quiet -m 'Feature' && git push --quiet origin feature", in: work)
+        let feature = sh("git rev-parse HEAD", in: work)
+        sh("git checkout --quiet main", in: work)
+        if merged { sh("git merge --quiet --no-ff -m 'Merge feature' feature && git push --quiet origin main", in: work) }
+        sh("git push --quiet origin --delete feature", in: work)
+        install(commit: feature, branch: "feature")
+        return feature
+    }
+
+    @Test func aMergedAndDeletedBranchFollowsMain() async {
+        _ = makeRepo()
+        _ = installFromDeletedBranch(merged: true)
+        let latest = commit("After the merge")
+        let updater = updater()
+        guard case .available(let commit, let changes, _) = await updater.check() else {
+            Issue.record("expected an update from main")
+            return
+        }
+        #expect(commit == latest)
+        #expect(changes == 2)
+        guard case .ready(_, let stageDir) = await updater.build() else {
+            Issue.record("expected a staged build")
+            return
+        }
+        // The new build is recorded as main, so later checks follow main.
+        #expect(sh("cat '\(stageDir)/irudd-voice.app/branch'") == "main")
+    }
+
+    @Test func anUnmergedDeletedBranchSaysWhatToDo() async {
+        _ = makeRepo()
+        _ = installFromDeletedBranch(merged: false)
+        _ = commit("Something on main")
+        guard case .notOnBranch(let message) = await updater().check() else {
+            Issue.record("expected notOnBranch")
+            return
+        }
+        #expect(message.contains("feature is gone"))
+        #expect(message.contains("./install.sh"))
     }
 
     @Test func checkoutStaysOutOfProtectedFolders() {
