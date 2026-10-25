@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from statistics import median
 
-from . import db
+from . import dataset, db, label, vocab
 
 
 def stats(con, path: Path) -> dict:
@@ -95,7 +95,12 @@ def main(argv: list[str] | None = None) -> int:
     stats_parser.add_argument("--json", action="store_true", help="print JSON")
     events_parser = commands.add_parser("events", help="the app's recent log lines")
     events_parser.add_argument("-n", type=int, default=40, help="how many (default 40)")
+    # Commands in their own modules open the database themselves.
+    for module in (label, vocab, dataset):
+        module.register(commands)
     args = parser.parse_args(argv)
+    if hasattr(args, "run"):
+        return args.run(args)
 
     try:
         con = db.connect(args.db)

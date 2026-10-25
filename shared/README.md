@@ -7,6 +7,8 @@ tests that run the fixtures in `fixtures/`.
 | File | What | Read by |
 | --- | --- | --- |
 | `cleanup-prompt.json` | Cleanup prompt, generation and check settings (`cleanup-v1`) | App (cleanup), CLI (train, eval, label) |
+| `teacher-prompt.json` | Labeling prompt for Claude Code and Codex (`teacher-v1`); wraps the cleanup rules | CLI (label) |
+| `teacher-reply.schema.json` | JSON schema of a teacher's reply, `{"cleaned": "..."}` | CLI (label), passed to the teacher CLIs |
 | `fixtures/prompt-building.json` | Exact system and user messages for given inputs | Swift and Python tests |
 | `fixtures/hard-checks.json` | Reply parsing and hard-check results every implementation must match | Swift and Python tests |
 | `manifest.schema.md` | Model folders and `manifest.json` | App, CLI |
@@ -15,6 +17,19 @@ tests that run the fixtures in `fixtures/`.
 
 Reference implementations: `cli/src/irudd_voice/prompt.py` and
 `cli/src/irudd_voice/hardchecks.py`.
+
+## Building the teacher prompt
+
+`irudd-voice label` builds the teacher's messages from `teacher-prompt.json`
+and the cleanup prompt it names (`cli/src/irudd_voice/teacher.py`):
+
+- **System** = `system_before` + the cleanup system message (rules plus
+  vocabulary, built as below) + `system_after`.
+- **User** = `user_template` with `{marker}`, `{input_json}` (as below) and
+  `{rule}` (the cleanup rule) filled in one pass. The marker lets
+  `irudd-voice vocab` skip any log a teacher run leaves.
+
+Bump `version` when the meaning changes; each label row stores it.
 
 ## Building the prompt
 
