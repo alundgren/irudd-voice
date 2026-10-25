@@ -1,0 +1,25 @@
+[project]
+name = "irudd-voice"
+version = "0.1.0"
+description = "Command-line tools for irudd-voice: stats and logs, vocabulary, teacher labels, datasets, model folders, LoRA training, eval and comparison, promote and rollback."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+irudd-voice = "irudd_voice.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "soundfile>=0.13", "numpy>=2"]
+# Model tools (models prepare, train, eval, parity-reference). Kept out of the
+# default install so `irudd-voice stats` stays light: uv run --group ml ...
+ml = ["mlx==0.32.4", "mlx-lm==0.32.2"]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.13"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: loads a real model; runs only with IRUDD_VOICE_SLOW=1 and uv run --group ml"]

@@ -1,0 +1,819 @@
+{
+  "version": 6,
+  "about": "Every hard-check implementation (Swift app, Python CLI) must give exactly these results, failures in the order dropped, answers, question, numbers, negation, identifiers, new_words. 'replies' test reading the model's raw reply (hit_limit = generation stopped at max_tokens); 'checks' test the checks.",
+  "replies": [
+    {
+      "name": "plain JSON",
+      "reply": "{\"cleaned\": \"Run the tests.\"}",
+      "hit_limit": false,
+      "cleaned": "Run the tests.",
+      "failure": null
+    },
+    {
+      "name": "JSON in a code fence",
+      "reply": "```json\n{\"cleaned\": \"Run the tests.\"}\n```",
+      "hit_limit": false,
+      "cleaned": "Run the tests.",
+      "failure": null
+    },
+    {
+      "name": "qwen think tags",
+      "reply": "<think>The user wants...</think>{\"cleaned\": \"Run the tests.\"}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "think_tags"
+    },
+    {
+      "name": "gemma thinking channel",
+      "reply": "<|channel>thought\nhmm<channel|>{\"cleaned\": \"Run the tests.\"}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "think_tags"
+    },
+    {
+      "name": "cut off at the token limit",
+      "reply": "{\"cleaned\": \"Run the tests and then",
+      "hit_limit": true,
+      "cleaned": null,
+      "failure": "cut_off"
+    },
+    {
+      "name": "unfinished JSON without hitting the limit",
+      "reply": "{\"cleaned\": \"Run the tests and then",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "trailing prose",
+      "reply": "{\"cleaned\": \"x\"} I cleaned it.",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "plain text",
+      "reply": "Run the tests.",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "wrong key",
+      "reply": "{\"text\": \"Run the tests.\"}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "not a string",
+      "reply": "{\"cleaned\": 42}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "repeated key",
+      "reply": "{\"cleaned\": \"Run the tests.\", \"cleaned\": \"Run the tests!\"}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "repeated key in a nested object",
+      "reply": "{\"cleaned\": \"Run the tests.\", \"x\": {\"k\": 1, \"k\": 2}}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "NaN constant",
+      "reply": "{\"cleaned\": \"Run the tests.\", \"score\": NaN}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "Infinity constant",
+      "reply": "{\"cleaned\": \"Run the tests.\", \"score\": -Infinity}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "byte order mark before the JSON",
+      "reply": "﻿{\"cleaned\": \"Run the tests.\"}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "lone surrogate escape",
+      "reply": "{\"cleaned\": \"Run the tests.\\ud800\"}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "lone low surrogate escape",
+      "reply": "{\"cleaned\": \"Run the tests.\\udc00b\"}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "nested 102 levels deep",
+      "reply": "{\"cleaned\": \"Run the tests.\", \"x\": [[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "Python whitespace around the reply",
+      "reply": "\u001c　{\"cleaned\": \"\\u001f Run the tests. \\u00a0\"}\n",
+      "hit_limit": false,
+      "cleaned": "Run the tests.",
+      "failure": null
+    },
+    {
+      "name": "zero-width space is not whitespace",
+      "reply": "​{\"cleaned\": \"Run the tests.\"}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "think tag followed by a combining mark",
+      "reply": "<think>́{\"cleaned\": \"Run the tests.\"}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "think_tags"
+    },
+    {
+      "name": "raw control character in a string",
+      "reply": "{\"cleaned\": \"Run the tests.\tb\"}",
+      "hit_limit": false,
+      "cleaned": null,
+      "failure": "malformed"
+    },
+    {
+      "name": "byte order mark at the token limit",
+      "reply": "﻿{\"cleaned\": \"Run the tests.\"}",
+      "hit_limit": true,
+      "cleaned": null,
+      "failure": "cut_off"
+    }
+  ],
+  "checks": [
+    {
+      "name": "fillers removed",
+      "transcript": "um can you uh run the tests",
+      "cleaned": "Can you run the tests?",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "spoken correction kept",
+      "transcript": "change the timeout to fifteen seconds no fifty seconds and don't touch the retries",
+      "cleaned": "Change the timeout to fifty seconds, and don't touch the retries.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "digits for spoken numbers",
+      "transcript": "set the limit to twenty five",
+      "cleaned": "Set the limit to 25.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "hundreds",
+      "transcript": "use one hundred and five workers",
+      "cleaned": "Use 105 workers.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "answered a question",
+      "transcript": "can you explain why the tests failed",
+      "cleaned": "Sure! The tests failed because the mock server wasn't started.",
+      "vocabulary": [],
+      "failures": [
+        "dropped",
+        "answers",
+        "question",
+        "negation",
+        "new_words"
+      ]
+    },
+    {
+      "name": "answer that grew",
+      "transcript": "explain the build",
+      "cleaned": "The build compiles every Swift file, links the frameworks, signs the bundle and copies the resources into place before packaging.",
+      "vocabulary": [],
+      "failures": [
+        "answers",
+        "new_words"
+      ]
+    },
+    {
+      "name": "question kept as a question",
+      "transcript": "can you explain why the tests failed",
+      "cleaned": "Can you explain why the tests failed?",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "number changed",
+      "transcript": "retry three times",
+      "cleaned": "Retry four times.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "number dropped",
+      "transcript": "wait 30 seconds then retry",
+      "cleaned": "Wait, then retry.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "negation dropped",
+      "transcript": "do not delete the cache",
+      "cleaned": "Delete the cache.",
+      "vocabulary": [],
+      "failures": [
+        "negation"
+      ]
+    },
+    {
+      "name": "contraction for negation is fine",
+      "transcript": "do not delete the cache",
+      "cleaned": "Don't delete the cache.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "identifier kept",
+      "transcript": "rename fetchUser to loadUser in api_client.py",
+      "cleaned": "Rename fetchUser to loadUser in api_client.py.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "identifier lost",
+      "transcript": "rename fetchUser to loadUser",
+      "cleaned": "Rename the fetch function to loadUser.",
+      "vocabulary": [],
+      "failures": [
+        "identifiers",
+        "new_words"
+      ]
+    },
+    {
+      "name": "identifier recased",
+      "transcript": "open readme.md",
+      "cleaned": "Open README.md.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "invented word",
+      "transcript": "update the docs",
+      "cleaned": "Update the documentation carefully.",
+      "vocabulary": [],
+      "failures": [
+        "new_words"
+      ]
+    },
+    {
+      "name": "vocabulary spelling",
+      "transcript": "open tea three code",
+      "cleaned": "Open T3 Code.",
+      "vocabulary": [
+        "T3 Code"
+      ],
+      "failures": []
+    },
+    {
+      "name": "spoken parts joined",
+      "transcript": "edit the read me",
+      "cleaned": "Edit the readme.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "plural and tense",
+      "transcript": "fix the failing test",
+      "cleaned": "Fix the failing tests.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "no correction, number must stay",
+      "transcript": "use port 8080 not 3000",
+      "cleaned": "Use port 8080, not 3000.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "empty cleaned for filler only",
+      "transcript": "um uh",
+      "cleaned": "",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "meaning flip: uninstall",
+      "transcript": "uninstall the package",
+      "cleaned": "Install the package.",
+      "vocabulary": [],
+      "failures": [
+        "new_words"
+      ]
+    },
+    {
+      "name": "meaning flip: deactivate",
+      "transcript": "deactivate the flag",
+      "cleaned": "Activate the flag.",
+      "vocabulary": [],
+      "failures": [
+        "new_words"
+      ]
+    },
+    {
+      "name": "meaning flip: invalid",
+      "transcript": "mark the token invalid",
+      "cleaned": "Mark the token valid.",
+      "vocabulary": [],
+      "failures": [
+        "new_words"
+      ]
+    },
+    {
+      "name": "no as a negation",
+      "transcript": "there is no cache",
+      "cleaned": "There is a cache.",
+      "vocabulary": [],
+      "failures": [
+        "negation"
+      ]
+    },
+    {
+      "name": "no dropped from a request",
+      "transcript": "add no retries",
+      "cleaned": "Add retries.",
+      "vocabulary": [],
+      "failures": [
+        "negation"
+      ]
+    },
+    {
+      "name": "no as a correction with commas",
+      "transcript": "set the timeout to fifteen seconds, no, fifty seconds",
+      "cleaned": "Set the timeout to 50 seconds.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "a correction without restating is not recognised (raw is pasted)",
+      "transcript": "delete the cache no the logs",
+      "cleaned": "Delete the logs.",
+      "vocabulary": [],
+      "failures": [
+        "negation"
+      ]
+    },
+    {
+      "name": "a negation before a corrected number stays (dropped)",
+      "transcript": "Don't run five, no, six tests.",
+      "cleaned": "Run six tests.",
+      "vocabulary": [],
+      "failures": [
+        "negation"
+      ]
+    },
+    {
+      "name": "a negation before a corrected number stays (kept)",
+      "transcript": "Don't run five, no, six tests.",
+      "cleaned": "Don't run six tests.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "never before a corrected number stays (dropped)",
+      "transcript": "never retry three no four times",
+      "cleaned": "Retry four times.",
+      "vocabulary": [],
+      "failures": [
+        "negation"
+      ]
+    },
+    {
+      "name": "never before a corrected number stays (kept)",
+      "transcript": "never retry three no four times",
+      "cleaned": "Never retry four times.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "no correction restating the word",
+      "transcript": "delete the cache no keep the cache",
+      "cleaned": "Keep the cache.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "wait is a verb, not a correction",
+      "transcript": "don't merge it wait for CI",
+      "cleaned": "Merge it, wait for CI.",
+      "vocabulary": [],
+      "failures": [
+        "negation"
+      ]
+    },
+    {
+      "name": "then is not a correction",
+      "transcript": "set it to 5 then wait for the build",
+      "cleaned": "Set it, then wait for the build.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "actually is filler, not a correction",
+      "transcript": "bump it to 30 retries actually that is fine",
+      "cleaned": "Bump the retries. That is fine.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "empty reply for real speech",
+      "transcript": "run the tests",
+      "cleaned": "",
+      "vocabulary": [],
+      "failures": [
+        "dropped"
+      ]
+    },
+    {
+      "name": "half the request dropped",
+      "transcript": "check the logs and the tests and the metrics and the alerts",
+      "cleaned": "Check the tests.",
+      "vocabulary": [],
+      "failures": [
+        "dropped"
+      ]
+    },
+    {
+      "name": "thousands",
+      "transcript": "import one thousand two hundred rows",
+      "cleaned": "Import 1200 rows.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "a hundred",
+      "transcript": "run it a hundred times",
+      "cleaned": "Run it 100 times.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "digit by digit port",
+      "transcript": "use port eight zero eight zero",
+      "cleaned": "Use port 8080.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "paired port",
+      "transcript": "use port eighty eighty",
+      "cleaned": "Use port 8080.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "year",
+      "transcript": "target twenty twenty six",
+      "cleaned": "Target 2026.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "filler before you can",
+      "transcript": "so you can run the tests now",
+      "cleaned": "You can run the tests now.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "filler before sure",
+      "transcript": "um sure go ahead and merge it",
+      "cleaned": "Sure, go ahead and merge it.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "of course spoken by the speaker",
+      "transcript": "okay of course it fails on CI",
+      "cleaned": "Of course it fails on CI.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "repeated number dropped once",
+      "transcript": "retry three times and wait three seconds",
+      "cleaned": "Retry three times and wait seconds.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "not that marks a correction",
+      "transcript": "use the red one not that the blue one",
+      "cleaned": "Use the blue one.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "answer from the speaker's own words",
+      "transcript": "should I use tabs or spaces",
+      "cleaned": "Use spaces.",
+      "vocabulary": [],
+      "failures": [
+        "question"
+      ]
+    },
+    {
+      "name": "question kept",
+      "transcript": "should I use tabs or spaces",
+      "cleaned": "Should I use tabs or spaces?",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "do not is not a question",
+      "transcript": "do not touch the retries",
+      "cleaned": "Don't touch the retries.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "dropped count hidden in a longer number",
+      "transcript": "retry 3 times with a 30 second timeout",
+      "cleaned": "Retry with a 30 second timeout.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "dropped wait hidden in a port",
+      "transcript": "wait 2 seconds then retry on port 3002",
+      "cleaned": "Wait, then retry on port 3002.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "dropped workers hidden in a port",
+      "transcript": "use 5 workers and port 8050",
+      "cleaned": "Use workers and port 8050.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "hundreds, tens and units",
+      "transcript": "add two hundred twenty five rows",
+      "cleaned": "Add 225 rows.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "thousands, hundreds, tens and units",
+      "transcript": "import one thousand two hundred thirty four rows",
+      "cleaned": "Import 1234 rows.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "hundreds and tens with and",
+      "transcript": "make it three hundred and forty two",
+      "cleaned": "Make it 342.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "corrected number kept beside its replacement",
+      "transcript": "change the timeout to fifteen seconds no fifty seconds",
+      "cleaned": "Change the timeout to 15 seconds and 50 seconds.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "corrected port kept beside its replacement",
+      "transcript": "use port 3000 no 3001",
+      "cleaned": "Use port 3000 and 3001.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "when clause is not a question",
+      "transcript": "when the tests pass merge it",
+      "cleaned": "When the tests pass, merge it.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "have a look is not a question",
+      "transcript": "have a look at the logs",
+      "cleaned": "Have a look at the logs.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "what I want is not a question",
+      "transcript": "what I want is a faster build",
+      "cleaned": "What I want is a faster build.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "where it says is not a question",
+      "transcript": "where it says foo change it to bar",
+      "cleaned": "Where it says foo, change it to bar.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "why is is a question",
+      "transcript": "why is the build slow",
+      "cleaned": "Why is the build slow.",
+      "vocabulary": [],
+      "failures": [
+        "question"
+      ]
+    },
+    {
+      "name": "do you is a question",
+      "transcript": "do you know why it fails",
+      "cleaned": "Do you know why it fails?",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "hedges dropped",
+      "transcript": "i was wondering whether you could maybe kind of look at the tests",
+      "cleaned": "Could you look at the tests?",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "numbers apart are not joined: version",
+      "transcript": "version two point five",
+      "cleaned": "Version 25.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "numbers apart are not joined: minutes and seconds",
+      "transcript": "set the timeout to one minute thirty seconds",
+      "cleaned": "Set the timeout to 130 seconds.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "numbers apart are not joined: counts",
+      "transcript": "retry 2 times with 5 workers",
+      "cleaned": "Retry with 25 workers.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "version with a point",
+      "transcript": "version two point five",
+      "cleaned": "Version 2.5.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "joined run before a single number",
+      "transcript": "set the port to eight zero eight zero and use eight workers",
+      "cleaned": "Set the port to 8080 and use eight workers.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "nineteen ninety nine",
+      "transcript": "target nineteen ninety nine",
+      "cleaned": "Target 1999.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "do this is a command",
+      "transcript": "do this for every file",
+      "cleaned": "Do this for every file.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "do that is a command",
+      "transcript": "do that again",
+      "cleaned": "Do that again.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "do it is a command",
+      "transcript": "do it now",
+      "cleaned": "Do it now.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "have it is a command",
+      "transcript": "have it run on CI",
+      "cleaned": "Have it run on CI.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "does it is a question",
+      "transcript": "does it run on CI",
+      "cleaned": "Does it run on CI.",
+      "vocabulary": [],
+      "failures": [
+        "question"
+      ]
+    },
+    {
+      "name": "spelled number over 2^53 is unusable",
+      "transcript": "use nine hundred hundred hundred hundred hundred hundred hundred hundred workers",
+      "cleaned": "Use nine hundred hundred hundred hundred hundred hundred hundred hundred workers.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "spelled number just under 2^53",
+      "transcript": "use nine hundred hundred hundred hundred hundred hundred hundred workers",
+      "cleaned": "Use 900000000000000 workers.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "long digit strings compare as strings",
+      "transcript": "set the id to 00123456789012345678901234567890",
+      "cleaned": "Set the id to 123456789012345678901234567890.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "very long digit string",
+      "transcript": "use 77777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777",
+      "cleaned": "Use 77777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "question mark followed by a combining mark",
+      "transcript": "can you run it",
+      "cleaned": "Can you run it?́",
+      "vocabulary": [],
+      "failures": [
+        "question"
+      ]
+    },
+    {
+      "name": "question mark before Python-only whitespace",
+      "transcript": "can you run it",
+      "cleaned": "Can you run it?\u001c",
+      "vocabulary": [],
+      "failures": []
+    }
+  ]
+}

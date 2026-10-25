@@ -1,0 +1,126 @@
+{
+  "fill": {
+    "linear-gradient": [
+      "srgb:0.10,0.49,0.88,1",
+      "srgb:0.086,0.204,0.384,1"
+    ],
+    "orientation": {
+      "start": {
+        "x": 0.15,
+        "y": 0
+      },
+      "stop": {
+        "x": 0.85,
+        "y": 1
+      }
+    }
+  },
+  "groups": [
+    {
+      "name": "Voice to prompt",
+      "layers": [
+        {
+          "name": "Sound bars",
+          "image-name": "bars.svg",
+          "glass": true,
+          "position": {
+            "scale": 1.1428571428571428,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          },
+          "fill-specializations": [
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "srgb:0.94118,0.97255,1,1"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "gray:1,1"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Prompt chevron",
+          "image-name": "chevron.svg",
+          "glass": true,
+          "position": {
+            "scale": 1.1428571428571428,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          },
+          "fill-specializations": [
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "srgb:0.94118,0.97255,1,1"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "gray:1,1"
+              }
+            }
+          ]
+        }
+      ],
+      "lighting": "individual",
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.22
+      },
+      "specular": true,
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      }
+    },
+    {
+      "name": "Insertion line",
+      "layers": [
+        {
+          "name": "Green insertion line",
+          "image-name": "insertion-line.svg",
+          "glass": false,
+          "position": {
+            "scale": 1.1428571428571428,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          },
+          "fill-specializations": [
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "gray:0.85,1"
+              }
+            }
+          ]
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.15
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

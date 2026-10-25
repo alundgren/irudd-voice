@@ -1,0 +1,50 @@
+{"id": "t01", "transcript": "um so I want you to refactor the fetch user function to use async await and uh make sure the tests still pass", "expected": "Refactor the fetch user function to use async await and make sure the tests still pass."}
+{"id": "t02", "transcript": "set the timeout to fifteen seconds no fifty seconds and don't touch the retries", "expected": "Set the timeout to fifty seconds and don't touch the retries."}
+{"id": "t03", "transcript": "open main dot swift and uh move the menu setup into its own function", "expected": "Open main.swift and move the menu setup into its own function."}
+{"id": "t04", "transcript": "the server should run on port three thousand sorry port four thousand", "expected": "The server should run on port 4000."}
+{"id": "t05", "transcript": "okay so basically the cache isn't being cleared when the user logs out can you look into that", "expected": "The cache isn't being cleared when the user logs out. Can you look into that?"}
+{"id": "t06", "transcript": "add a retry with three attempts no four attempts and a one second delay", "expected": "Add a retry with four attempts and a one second delay."}
+{"id": "t07", "transcript": "don't run the migrations on production just generate the sql", "expected": "Don't run the migrations on production, just generate the SQL."}
+{"id": "t08", "transcript": "um in package dot json bump the version to two point one point zero", "expected": "In package.json, bump the version to 2.1.0."}
+{"id": "t09", "transcript": "rename user service to account service everywhere but not in the tests", "expected": "Rename user service to account service everywhere, but not in the tests."}
+{"id": "t10", "transcript": "so like the button should be twelve pixels from the edge not sixteen", "expected": "The button should be twelve pixels from the edge, not sixteen."}
+{"id": "t11", "transcript": "uh write a unit test for the parse date function that covers leap years", "expected": "Write a unit test for the parse date function that covers leap years."}
+{"id": "t12", "transcript": "make the list show twenty items I mean thirty items per page", "expected": "Make the list show thirty items per page."}
+{"id": "t13", "transcript": "check the readme dot md and fix any broken links", "expected": "Check the readme.md and fix any broken links."}
+{"id": "t14", "transcript": "we never want to log the password even in debug mode", "expected": "We never want to log the password, even in debug mode."}
+{"id": "t15", "transcript": "um can you find out why the build takes like five minutes now", "expected": "Can you find out why the build takes five minutes now?"}
+{"id": "t16", "transcript": "delete the old feature flag and the code behind it but keep the analytics event", "expected": "Delete the old feature flag and the code behind it, but keep the analytics event."}
+{"id": "t17", "transcript": "so the api should return a four oh four when the user doesn't exist", "expected": "The API should return a 404 when the user doesn't exist."}
+{"id": "t18", "transcript": "put the config in config slash settings dot yaml", "expected": "Put the config in config/settings.yaml."}
+{"id": "t19", "transcript": "uh the limit should be one hundred requests per minute", "expected": "The limit should be 100 requests per minute."}
+{"id": "t20", "transcript": "make the header blue sorry make the header green", "expected": "Make the header green."}
+{"id": "t21", "transcript": "you know the date picker crashes when you pick february twenty ninth", "expected": "The date picker crashes when you pick February twenty ninth."}
+{"id": "t22", "transcript": "move the helper functions from utils dot py into helpers dot py and update the imports", "expected": "Move the helper functions from utils.py into helpers.py and update the imports."}
+{"id": "t23", "transcript": "i don't think we need the second database call can you remove it", "expected": "I don't think we need the second database call. Can you remove it?"}
+{"id": "t24", "transcript": "um set max connections to ten and the pool timeout to thirty seconds", "expected": "Set max connections to ten and the pool timeout to thirty seconds."}
+{"id": "t25", "transcript": "don't add any new dependencies for this", "expected": "Don't add any new dependencies for this."}
+{"id": "t26", "transcript": "upgrade the swift tools version to six point two in the package file", "expected": "Upgrade the Swift tools version to 6.2 in the package file."}
+{"id": "t27", "transcript": "so first run the linter then fix whatever it finds and then commit", "expected": "First run the linter, then fix whatever it finds, and then commit."}
+{"id": "t28", "transcript": "the worker should process five sorry fifteen jobs at a time", "expected": "The worker should process fifteen jobs at a time."}
+{"id": "t29", "transcript": "uh look at the error in the console it says cannot read property of undefined", "expected": "Look at the error in the console. It says cannot read property of undefined."}
+{"id": "t30", "transcript": "add a dark mode toggle to the settings screen but don't change the default", "expected": "Add a dark mode toggle to the settings screen, but don't change the default."}
+{"id": "t31", "transcript": "um basically I want the search to ignore case and trim whitespace", "expected": "I want the search to ignore case and trim whitespace."}
+{"id": "t32", "transcript": "expose the metrics on port nine zero nine zero", "expected": "Expose the metrics on port 9090."}
+{"id": "t33", "transcript": "make sure the function returns an empty array and not null", "expected": "Make sure the function returns an empty array and not null."}
+{"id": "t34", "transcript": "why does the login test fail only on ci", "expected": "Why does the login test fail only on CI?"}
+{"id": "t35", "transcript": "write the output to slash tmp slash report dot json", "expected": "Write the output to /tmp/report.json."}
+{"id": "t36", "transcript": "keep the first two columns and drop the rest", "expected": "Keep the first two columns and drop the rest."}
+{"id": "t37", "transcript": "so the thumbnails should be two hundred fifty six pixels wide", "expected": "The thumbnails should be 256 pixels wide."}
+{"id": "t38", "transcript": "can you add type hints to the whole module without changing behaviour", "expected": "Can you add type hints to the whole module without changing behaviour?"}
+{"id": "t39", "transcript": "uh the cron job should run every six hours no every twelve hours", "expected": "The cron job should run every twelve hours."}
+{"id": "t40", "transcript": "nothing in the public interface should change", "expected": "Nothing in the public interface should change."}
+{"id": "t41", "transcript": "um add logging to the payment handler and like include the order id", "expected": "Add logging to the payment handler and include the order ID."}
+{"id": "t42", "transcript": "split the long function in app delegate dot swift into smaller ones", "expected": "Split the long function in app delegate.swift into smaller ones."}
+{"id": "t43", "transcript": "i want two tabs one for history and one for settings", "expected": "I want two tabs, one for history and one for settings."}
+{"id": "t44", "transcript": "the release notes should mention version three point zero point one", "expected": "The release notes should mention version 3.0.1."}
+{"id": "t45", "transcript": "don't merge this until the review is done and the tests are green", "expected": "Don't merge this until the review is done and the tests are green."}
+{"id": "t46", "transcript": "okay so replace the for loop with a map and remove the temporary variable", "expected": "Replace the for loop with a map and remove the temporary variable."}
+{"id": "t47", "transcript": "set the font size to fourteen and the line height to twenty", "expected": "Set the font size to fourteen and the line height to twenty."}
+{"id": "t48", "transcript": "uh is it possible to cache the token instead of fetching it every time", "expected": "Is it possible to cache the token instead of fetching it every time?"}
+{"id": "t49", "transcript": "the docker image shouldn't be bigger than five hundred megabytes", "expected": "The Docker image shouldn't be bigger than 500 megabytes."}
+{"id": "t50", "transcript": "um so after the upload finishes show a toast and don't block the ui", "expected": "After the upload finishes, show a toast and don't block the UI."}
