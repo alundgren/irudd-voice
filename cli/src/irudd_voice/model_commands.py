@@ -6,6 +6,7 @@ parity-reference. All but `models verify` and `models register` need the
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import json
 import os
@@ -137,7 +138,8 @@ def train_command(args) -> int:
     if not name:
         raise ModelError("train --tiny needs a candidate: " + CANDIDATE_HELP)
     cand = models.candidate(name)
-    result = train.train_tiny(cand, args.models_dir, log=log)
+    with contextlib.redirect_stdout(sys.stderr):
+        result = train.train_tiny(cand, args.models_dir, log=log)
     # A tiny model is a synthetic test of the training round trip with a real
     # prompt_version: in the app's database it would look like a trained model
     # to Settings → Model and promote. Record it only into an explicit --db.
@@ -187,7 +189,10 @@ def train_run(args, name: str | None, log) -> int:
     lower_priority(log)
     with appstate.UnloadLease(path, log=log) as lease:
         log(f"going ahead: {lease.wait_for_app()}")
-        result = train.train_dataset(cand, data, model_id, models_dir=args.models_dir, settings=settings, log=log)
+        # mlx-lm prints its progress table to stdout; keep stdout for the result.
+        with contextlib.redirect_stdout(sys.stderr):
+            result = train.train_dataset(cand, data, model_id, models_dir=args.models_dir, settings=settings,
+                                         log=log)
     models.record(path, result.manifest)
     log(f"recorded {model_id} in {path}. Next: irudd-voice eval-compare {model_id}")
     print(json.dumps({"model_id": model_id, "folder": str(result.folder), "timings": result.timings,

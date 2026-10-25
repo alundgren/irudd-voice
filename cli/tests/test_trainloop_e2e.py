@@ -72,7 +72,8 @@ def test_train_and_eval_compare_end_to_end(app_db, tmp_path, monkeypatch, capsys
         for side in ("candidate", "incumbent"):
             assert item[side]["pasted"]
     assert "Promotable:  no" in out
-    print(json.dumps({"training": training, "timings": result["timings"], "summary": report["summary"]}))
+    with capsys.disabled():  # the numbers for the run notes (pytest -s)
+        print(json.dumps({"training": training, "timings": result["timings"], "summary": report["summary"]}))
 
     # Too few test thoughts to promote.
     assert cli.main(["promote", model_id, "--db", str(app_db), "--models-dir", str(models_dir), "--wait", "0",
