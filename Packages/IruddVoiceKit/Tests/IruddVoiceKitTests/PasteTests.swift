@@ -353,12 +353,50 @@ struct PasteAgainTests {
 
     @Test func pastesTheDeliveredTextOfTheNewestThought() {
         var memory = PasteAgain()
+        memory.started(id: 1)
         memory.delivered(id: 1, text: "Run the tests.", outcome: .pasted)
         #expect(memory.text(waiting: nil, newest: row(1))! == (1, "Run the tests."))
-        // A thought from before this run: its raw text.
-        #expect(PasteAgain().text(waiting: nil, newest: row(5))! == (5, "raw text"))
         // Waiting text comes first.
         #expect(memory.text(waiting: (2, "Waiting."), newest: row(1))! == (2, "Waiting."))
+    }
+
+    /// A row this run never saw (saved before the app restarted): its raw
+    /// text, since nothing is in flight for it.
+    @Test func rowFromBeforeThisRunPastesItsRawText() {
+        #expect(PasteAgain().text(waiting: nil, newest: row(5))! == (5, "raw text"))
+    }
+
+    /// B is transcribed (the newest row) but still being cleaned: Paste last
+    /// again pastes nothing until B is delivered, never B's raw text early.
+    @Test func thoughtInFlightIsNotPastedUntilDelivered() {
+        var memory = PasteAgain()
+        memory.started(id: 1)
+        memory.delivered(id: 1, text: "First.", outcome: .pasted)
+        memory.started(id: 2)
+        #expect(memory.text(waiting: nil, newest: row(2)) == nil)
+        // Not the older thought either.
+        #expect(memory.lastDelivered! == (1, "First."))
+        memory.delivered(id: 2, text: "Second, cleaned.", outcome: .pasted)
+        #expect(memory.text(waiting: nil, newest: row(2))! == (2, "Second, cleaned."))
+    }
+
+    /// B in flight and marked by Throw Away: nothing before its delivery
+    /// (PasteAgain isn't told about the mark), and nothing after it's
+    /// discarded or its paste is stopped.
+    @Test func markedThoughtInFlightIsNeverPasted() {
+        for stoppedDuringPaste in [false, true] {
+            var memory = PasteAgain()
+            memory.started(id: 1)
+            memory.delivered(id: 1, text: "First.", outcome: .pasted)
+            memory.started(id: 2)
+            #expect(memory.text(waiting: nil, newest: row(2)) == nil)
+            if stoppedDuringPaste {
+                memory.delivered(id: 2, text: "Second.", outcome: .stopped)
+            } else {
+                memory.thrownAway(id: 2)
+            }
+            #expect(memory.text(waiting: nil, newest: row(2)) == nil)
+        }
     }
 
     /// Throw Away stopped the paste before ⌘V (or the paste gave up after
@@ -367,6 +405,7 @@ struct PasteAgainTests {
     @Test func stoppedPasteIsNotPastedAgain() {
         var memory = PasteAgain()
         memory.delivered(id: 1, text: "First.", outcome: .pasted)
+        memory.started(id: 2)
         memory.delivered(id: 2, text: "Second.", outcome: .stopped)
         #expect(memory.text(waiting: nil, newest: row(2)) == nil)
         #expect(memory.text(waiting: nil, newest: row(2, status: "discarded")) == nil)
@@ -376,6 +415,7 @@ struct PasteAgainTests {
     /// both drop the waiting text the same way.
     @Test func droppedWaitingTextIsNotPastedAgain() {
         var memory = PasteAgain()
+        memory.started(id: 3)
         memory.delivered(id: 3, text: "Held.", outcome: .waiting(.targetMoved))
         #expect(memory.text(waiting: (3, "Held."), newest: row(3))! == (3, "Held."))
         memory.thrownAway(id: 3)
@@ -388,6 +428,7 @@ struct PasteAgainTests {
     @Test func thoughtThrownAwayBeforeItsPasteIsNotPastedAgain() {
         var memory = PasteAgain()
         memory.delivered(id: 1, text: "First.", outcome: .pasted)
+        memory.started(id: 2)
         memory.thrownAway(id: 2)
         #expect(memory.text(waiting: nil, newest: row(2)) == nil)
         // Read from the database after a restart: the row says discarded.

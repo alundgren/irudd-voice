@@ -298,9 +298,14 @@ final class AppModel {
                 ? "Speech recognition didn't start for this thought."
                 : SpeechSetupError.assetsMissing.description)
         delivery.add(make: { [weak self] number in
-            guard let id = await recorder.record(thought, meta: meta, transcription: transcription, saved: { _ in
-                Task { @MainActor in await self?.refreshDatabaseInfo() }
+            guard let id = await recorder.record(thought, meta: meta, transcription: transcription, saved: { id in
+                Task { @MainActor in
+                    // Before the row can show up as the newest one.
+                    self?.pasteAgain.started(id: id)
+                    await self?.refreshDatabaseInfo()
+                }
             }) else { return .notSaved }
+            await self?.markStarted(id)
             await self?.refreshDatabaseInfo()
             guard !discard, let row = try? await store.chunk(id: id), row.status == "transcribed",
                   let raw = row.rawText, !raw.isEmpty else { return .noText(id: id) }
@@ -311,6 +316,12 @@ final class AppModel {
         }, deliver: { [weak self] number, made, thrownAway in
             await self?.deliver(made, number: number, discard: discard || thrownAway, target: pasteTarget)
         })
+    }
+
+    /// The thought's row is in flight for Paste last again. Also called
+    /// from `saved`; this one runs before the transcribed row is read back.
+    private func markStarted(_ id: Int64) {
+        pasteAgain.started(id: id)
     }
 
     /// Transcript mode: what was heard, while it's being cleaned.

@@ -150,7 +150,9 @@ up** meanwhile; a 50-word thought takes about 1.2 s.
   newest thought's text as it was pasted, where your cursor is now) and
   **Throw away current**. Thrown-away text is never pasted again: if the
   newest thought was thrown away, Paste last again pastes nothing, not an
-  older thought. Throw away acts on what
+  older thought. While the newest thought is still being transcribed,
+  cleaned or pasted, Paste last again pastes nothing (waiting text aside)
+  until that thought is delivered, so its raw text never goes out early. Throw away acts on what
   the icon shows: while **Hearing you** it ends the thought, on **Cleaning
   up** it drops the newest thought still being cleaned (up to the moment
   it's pasted), and on **Text waiting** it drops the waiting text. Nothing
