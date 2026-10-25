@@ -97,6 +97,15 @@ struct StorageTests {
         #expect(done.status == "transcribed")
         #expect(done.rawText == "change the timeout")
         #expect(done.durationMs == 4000)
+        #expect(done.pastedText == nil && done.cleanedText == nil)
+
+        // Paste last again reads these after a restart.
+        try await store.markCleanup(id: id, CleanupRecord(status: "cleaned", cleanedText: "Change the timeout.",
+                                                          modelID: "m", milliseconds: 300, promptVersion: "cleanup-v1"))
+        try await store.markPaste(id: id, status: "pasted", text: "Change the timeout.")
+        let pasted = try #require(try await store.chunk(id: id))
+        #expect(pasted.cleanedText == "Change the timeout.")
+        #expect(pasted.pastedText == "Change the timeout.")
     }
 
     @Test func failedRecognitionKeepsTheAudio() async throws {
@@ -176,6 +185,24 @@ struct StorageTests {
         #expect(try await store.count() == 1)
         try await store.deleteAllRecordings()
         #expect(try await store.count() == 0)
+    }
+
+    @Test func deleteAllRemovesTextFromEvalReports() async throws {
+        let path = temporaryDatabasePath()
+        let store = try ChunkStore(path: path)
+        let db = try Database(path: path)
+        let report = #"{"kind": "eval-compare", "summary": {"compared": 1}, "items": [{"chunk_id": 1, "candidate": {"pasted": "my secret thought"}}]}"#
+        _ = try db.query("""
+            INSERT INTO models (id, base_repo, base_revision, manifest_json, eval_report_json, created_at)
+            VALUES ('trained', 'repo', 'rev', '{}', ?, 'now'), ('base', 'repo', 'rev', '{}', NULL, 'now')
+            """, [.text(report)])
+        try await store.deleteAllRecordings()
+        let rows = try db.query("SELECT id, eval_report_json FROM models ORDER BY id")
+        #expect(rows.map { $0[0].text } == ["base", "trained"])
+        #expect(rows[0][1].text == nil)
+        let kept = try #require(rows[1][1].text)
+        #expect(!kept.contains("my secret thought") && !kept.contains("items"))
+        #expect(kept.contains(#""summary":{"compared":1}"#))
     }
 }
 

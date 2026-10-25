@@ -11,8 +11,18 @@ your own voice and words.
 **Status:** early. This version has the menu-bar app, first-run setup, the
 installer, mic capture (pick a mic; the mute button or a hotkey starts and
 ends a thought), and saving: every thought's audio and Apple's text go into
-the database, then Apple's text is pasted where your cursor was. Cleanup
-and training come next.
+the database. Then a local model cleans the text and it's pasted where your
+cursor was. If cleanup fails or changes what you meant, your text is pasted
+as it was heard (see [docs/ux.md](docs/ux.md#cleanup)). Training the model
+on your own thoughts comes next.
+
+The cleanup model isn't downloaded by the app yet. Make the default one
+once with:
+
+```sh
+cd cli
+uv run --group ml irudd-voice models prepare gemma-4-e2b
+```
 
 ## What you need
 

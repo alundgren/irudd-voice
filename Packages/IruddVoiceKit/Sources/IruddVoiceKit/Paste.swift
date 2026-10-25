@@ -89,6 +89,18 @@ public enum PasteOutcome: Equatable, Sendable {
     case pasted
     /// Not pasted; the text waits for Paste here or Copy.
     case waiting(WaitReason)
+    /// Throw Away came before ⌘V: nothing was pasted, and the clipboard is
+    /// as it was.
+    case stopped
+}
+
+/// Where a paste asks whether to stop. `check`: after waiting for held keys,
+/// and before giving up with `.waiting`, so a thrown-away thought is never
+/// left as waiting text. `beforeKeystroke`: the last time, right before the
+/// final focus check and ⌘V; after it says go, the paste can't be stopped.
+public enum PasteStage: Sendable {
+    case check
+    case beforeKeystroke
 }
 
 public enum WaitReason: String, Equatable, Sendable {
@@ -102,9 +114,8 @@ public enum WaitReason: String, Equatable, Sendable {
         switch self {
         case .targetMoved: "You moved to another app or text box, so nothing was pasted."
         case .keysHeld: "Keys were held down for too long, so nothing was pasted."
-        case .clipboardDenied: "The app isn't allowed to read the clipboard, so it couldn't be put back after pasting."
-        case .clipboardIncomplete: "Part of the clipboard couldn't be read, so it couldn't be put back after pasting."
-        case .noAccessibility: "Pasting needs Accessibility permission."
+        case .clipboardDenied, .clipboardIncomplete: "Not pasted: the app can't read the clipboard to put it back afterwards."
+        case .noAccessibility: "Not pasted: pasting needs Accessibility permission."
         }
     }
 }
@@ -136,11 +147,14 @@ public actor Paster {
     }
 
     /// Pastes after any paste already in progress has finished.
-    public func paste(_ text: String, into target: PasteTarget) async -> PasteOutcome {
+    /// `shouldStop` is asked at each `PasteStage`; true stops the paste
+    /// (Throw Away), with nothing pasted and the clipboard put back.
+    public func paste(_ text: String, into target: PasteTarget,
+                      shouldStop: @escaping @Sendable (PasteStage) async -> Bool = { _ in false }) async -> PasteOutcome {
         let previous = queue
         let job = Task { [self] () -> PasteOutcome in
             await previous?.value
-            return await pasteNow(text, into: target)
+            return await pasteNow(text, into: target, shouldStop: shouldStop)
         }
         queue = Task { _ = await job.value }
         return await job.value
@@ -152,29 +166,51 @@ public actor Paster {
         return await paste(text, into: target)
     }
 
-    private func pasteNow(_ text: String, into target: PasteTarget) async -> PasteOutcome {
-        guard keyboard.canPost() else { return .waiting(.noAccessibility) }
+    /// The text as one line: each run of line breaks, with the spaces and
+    /// tabs around it, becomes one space. A pasted line break would press
+    /// Return in a chat box and send the message.
+    public static func oneLine(_ text: String) -> String {
+        text.replacing(/[ \t]*[\r\n\u{0B}\u{0C}\u{85}\u{2028}\u{2029}]+[ \t]*/.matchingSemantics(.unicodeScalar),
+                       with: " ")
+    }
+
+    private func pasteNow(_ text: String, into target: PasteTarget,
+                          shouldStop: @Sendable (PasteStage) async -> Bool) async -> PasteOutcome {
+        /// Not pasting: stopped if Throw Away marked it, otherwise waiting.
+        func notPasted(_ reason: WaitReason) async -> PasteOutcome {
+            await shouldStop(.check) ? .stopped : .waiting(reason)
+        }
+        guard keyboard.canPost() else { return await notPasted(.noAccessibility) }
 
         // A shortcut's ⌘ still held would turn ⌘V into something else.
         let clock = ContinuousClock()
         let deadline = clock.now + settings.modifierWait
         while keyboard.modifiersHeld() {
-            if clock.now >= deadline { return .waiting(.keysHeld) }
+            if clock.now >= deadline { return await notPasted(.keysHeld) }
             try? await Task.sleep(for: settings.modifierPoll)
         }
+        if await shouldStop(.check) { return .stopped }
 
-        guard let now = focus.current(), now.isSame(as: target) else { return .waiting(.targetMoved) }
+        guard let now = focus.current(), now.isSame(as: target) else { return await notPasted(.targetMoved) }
 
         let saved: ClipboardSnapshot
         switch clipboard.snapshot() {
         case .complete(let snapshot): saved = snapshot
-        case .denied: return .waiting(.clipboardDenied)
-        case .incomplete: return .waiting(.clipboardIncomplete)
+        case .denied: return await notPasted(.clipboardDenied)
+        case .incomplete: return await notPasted(.clipboardIncomplete)
         }
 
-        let ours = clipboard.writeDictation(text)
+        // Every paste goes through here, so this is the one place line breaks go.
+        let ours = clipboard.writeDictation(Self.oneLine(text))
 
-        // Last check right before the keystroke.
+        // The last chance to stop. After this the thought is committed: a
+        // failed focus check below makes it waiting text, which Throw Away
+        // can still drop.
+        if await shouldStop(.beforeKeystroke) {
+            if clipboard.changeCount == ours { clipboard.restore(saved) }
+            return .stopped
+        }
+        // Last focus check, with nothing awaited between it and ⌘V.
         guard let still = focus.current(), still.isSame(as: target) else {
             if clipboard.changeCount == ours { clipboard.restore(saved) }
             return .waiting(.targetMoved)

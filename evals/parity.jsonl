@@ -1,0 +1,20 @@
+{"id": "p01", "transcript": "um can you explain why the tests failed", "vocabulary": []}
+{"id": "p02", "transcript": "set the timeout to fifteen seconds no fifty seconds", "vocabulary": []}
+{"id": "p03", "transcript": "open src/app/main.swift and rename the view model", "vocabulary": []}
+{"id": "p04", "transcript": "it’s fine to skip the flaky test but don’t delete it", "vocabulary": []}
+{"id": "p05", "transcript": "the error says \"permission denied\" when it writes the log", "vocabulary": []}
+{"id": "p06", "transcript": "first line of the commit message\nsecond line with the details", "vocabulary": []}
+{"id": "p07", "transcript": "write a function that reverses a string", "vocabulary": []}
+{"id": "p08", "transcript": "uh so basically the fetch user function in api client dot py should use async await", "vocabulary": []}
+{"id": "p09", "transcript": "bump the version to two point three point one and update the changelog", "vocabulary": []}
+{"id": "p10", "transcript": "what's the difference between a struct and a class in swift", "vocabulary": []}
+{"id": "p11", "transcript": "don't change the port it should stay on eight zero eight zero", "vocabulary": []}
+{"id": "p12", "transcript": "run the migrations then restart the worker and check the logs", "vocabulary": ["irudd-voice", "SQLite"]}
+{"id": "p13", "transcript": "add a test for the sqlite store that checks the schema version", "vocabulary": ["SQLite", "IruddVoiceKit"]}
+{"id": "p14", "transcript": "hmm I mean the second one not the first one", "vocabulary": []}
+{"id": "p15", "transcript": "use a tab\there instead of spaces and keep the {rule} placeholder", "vocabulary": []}
+{"id": "p16", "transcript": "the path is C:\\Users\\dev\\project and it has a backslash", "vocabulary": []}
+{"id": "p17", "transcript": "move the button to the right sorry to the left of the search field", "vocabulary": []}
+{"id": "p18", "transcript": "café crème — keep the accents and the em dash", "vocabulary": []}
+{"id": "p19", "transcript": "never push to main without a review and never force push", "vocabulary": []}
+{"id": "p20", "transcript": "okay so like we need three retries with a two hundred millisecond delay you know between them", "vocabulary": []}

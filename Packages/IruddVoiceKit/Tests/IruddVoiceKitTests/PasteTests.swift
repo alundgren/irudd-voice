@@ -47,13 +47,20 @@ final class FakeClipboard: Clipboard, @unchecked Sendable {
 final class FakeKeyboard: Keyboard, @unchecked Sendable {
     private let lock = NSLock()
     var heldUntil: ContinuousClock.Instant?
+    /// Keys held until the test lets go; `heldChecks` counts the polls.
+    var holding = false
+    private var _heldChecks = 0
+    var heldChecks: Int { lock.withLock { _heldChecks } }
     var keyCode: UInt16 = 9
     var posted: [UInt16] = []
     var accessibility = true
     var onPost: (() -> Void)?
 
     func modifiersHeld() -> Bool {
-        lock.withLock { heldUntil.map { ContinuousClock.now < $0 } ?? false }
+        lock.withLock {
+            _heldChecks += 1
+            return holding || (heldUntil.map { ContinuousClock.now < $0 } ?? false)
+        }
     }
     func pasteKeyCode() -> UInt16 { keyCode }
     func postCommand(keyCode: UInt16) {
@@ -66,10 +73,16 @@ final class FakeKeyboard: Keyboard, @unchecked Sendable {
 final class FakeFocus: FocusReader, @unchecked Sendable {
     private let lock = NSLock()
     private var targets: [PasteTarget?]
+    private var _calls = 0
     init(_ targets: PasteTarget?...) { self.targets = targets }
+    /// How many times focus was read.
+    var calls: Int { lock.withLock { _calls } }
     /// Returns the queued targets in order, then keeps returning the last.
     func current() -> PasteTarget? {
-        lock.withLock { targets.count > 1 ? targets.removeFirst() : targets.first ?? nil }
+        lock.withLock {
+            _calls += 1
+            return targets.count > 1 ? targets.removeFirst() : targets.first ?? nil
+        }
     }
 }
 
@@ -110,6 +123,18 @@ struct PasteTests {
         #expect(!keyboard.posted.contains(36) && !keyboard.posted.contains(76))
     }
 
+    /// A line break in the clipboard text would press Return in a chat box:
+    /// every kind becomes one space, whatever path the paste came from.
+    @Test func pastedTextIsAlwaysOneLine() async {
+        let clipboard = FakeClipboard()
+        let paster = Paster(clipboard: clipboard, keyboard: FakeKeyboard(), focus: FakeFocus(editorBox),
+                            settings: settings())
+        _ = await paster.paste("Run the tests.\r\nThen deploy.\n\n Done", into: editorBox)
+        _ = await paster.pasteHere("one\rtwo\u{2028}three \u{2029}\tfour\u{85}five")
+        #expect(clipboard.writes == ["Run the tests. Then deploy. Done", "one two three four five"])
+        #expect(Paster.oneLine("no breaks,  two spaces") == "no breaks,  two spaces")
+    }
+
     @Test func usesTheLayoutsVKey() async {
         let keyboard = FakeKeyboard()
         keyboard.keyCode = 47 // where "v" is on Dvorak
@@ -125,6 +150,104 @@ struct PasteTests {
         let started = ContinuousClock.now
         #expect(await paster.paste("hello", into: editorBox) == .pasted)
         #expect(ContinuousClock.now - started >= .milliseconds(100))
+    }
+
+    /// Throw Away during the wait for held keys: nothing is written to the
+    /// clipboard and nothing is pasted.
+    @Test func stopDuringTheKeyWaitPastesNothing() async {
+        let clipboard = FakeClipboard()
+        let keyboard = FakeKeyboard()
+        keyboard.holding = true
+        var slow = settings()
+        slow.modifierWait = .seconds(30)
+        let paster = Paster(clipboard: clipboard, keyboard: keyboard, focus: FakeFocus(editorBox), settings: slow)
+        let stop = StopFlag()
+        let paste = Task { await paster.paste("hello", into: editorBox, shouldStop: { stage in stop.ask(stage) }) }
+        await waitUntil { keyboard.heldChecks > 0 }
+        stop.set()
+        keyboard.holding = false
+        #expect(await paste.value == .stopped)
+        #expect(stop.stages == [.check])
+        #expect(clipboard.writes.isEmpty && clipboard.restores == 0)
+        #expect(keyboard.posted.isEmpty)
+    }
+
+    /// Throw Away at the last moment: our text was on the clipboard, so the
+    /// old contents are put back, and ⌘V never happens.
+    @Test func stopRightBeforeTheKeystrokeRestoresTheClipboard() async {
+        let clipboard = FakeClipboard()
+        let keyboard = FakeKeyboard()
+        let paster = Paster(clipboard: clipboard, keyboard: keyboard, focus: FakeFocus(editorBox), settings: settings())
+        let outcome = await paster.paste("hello", into: editorBox, shouldStop: { $0 == .beforeKeystroke })
+        #expect(outcome == .stopped)
+        #expect(clipboard.writes == ["hello"] && clipboard.restores == 1)
+        #expect(clipboard.contents == [["public.utf8-plain-text": Data("old".utf8)]])
+        #expect(keyboard.posted.isEmpty)
+    }
+
+    /// Marked, and the keys stay held past the deadline: thrown away, not
+    /// left as waiting text.
+    @Test func markedWithKeysHeldPastTheDeadlineIsStopped() async {
+        let clipboard = FakeClipboard()
+        let keyboard = FakeKeyboard()
+        keyboard.holding = true
+        let paster = Paster(clipboard: clipboard, keyboard: keyboard, focus: FakeFocus(editorBox), settings: settings())
+        let stop = StopFlag()
+        let paste = Task { await paster.paste("hello", into: editorBox, shouldStop: { stop.ask($0) }) }
+        await waitUntil { keyboard.heldChecks > 0 }
+        stop.set()
+        #expect(await paste.value == .stopped)
+        #expect(stop.stages == [.check])
+        #expect(clipboard.writes.isEmpty && keyboard.posted.isEmpty)
+        // Unmarked, the same paste waits.
+        let unmarked = await paster.paste("hello", into: editorBox, shouldStop: { _ in false })
+        #expect(unmarked == .waiting(.keysHeld))
+    }
+
+    /// Every way of giving up asks first, so a marked thought is stopped.
+    @Test func markedThoughtIsNeverLeftWaiting() async {
+        let denied = FakeClipboard()
+        denied.snapshotResult = .denied
+        let noAccess = FakeKeyboard()
+        noAccess.accessibility = false
+        let cases: [(Clipboard, Keyboard, FocusReader)] = [
+            (FakeClipboard(), FakeKeyboard(), FakeFocus(otherBox)),
+            (denied, FakeKeyboard(), FakeFocus(editorBox)),
+            (FakeClipboard(), noAccess, FakeFocus(editorBox)),
+        ]
+        for (clipboard, keyboard, focus) in cases {
+            let paster = Paster(clipboard: clipboard, keyboard: keyboard, focus: focus, settings: settings())
+            #expect(await paster.paste("hello", into: editorBox, shouldStop: { $0 == .check }) == .stopped)
+        }
+    }
+
+    /// The last stop question comes before the last focus check, so nothing
+    /// is awaited between that check and ⌘V. A committed thought that then
+    /// fails the focus check becomes waiting text.
+    @Test func lastFocusCheckIsRightBeforeTheKeystroke() async {
+        let clipboard = FakeClipboard()
+        let keyboard = FakeKeyboard()
+        let focus = FakeFocus(editorBox, otherBox)
+        let paster = Paster(clipboard: clipboard, keyboard: keyboard, focus: focus, settings: settings())
+        let focusReads = Counter()
+        let outcome = await paster.paste("hello", into: editorBox, shouldStop: { stage in
+            if stage == .beforeKeystroke { focusReads.set(focus.calls) }
+            return false
+        })
+        // Asked after the first focus check and before the last one.
+        #expect(focusReads.value == 1)
+        #expect(focus.calls == 2)
+        #expect(outcome == .waiting(.targetMoved))
+        #expect(clipboard.restores == 1 && keyboard.posted.isEmpty)
+    }
+
+    @Test func asksAtBothStagesWhenNotStopped() async {
+        let stop = StopFlag()
+        let keyboard = FakeKeyboard()
+        let paster = Paster(clipboard: FakeClipboard(), keyboard: keyboard, focus: FakeFocus(editorBox), settings: settings())
+        #expect(await paster.paste("hello", into: editorBox, shouldStop: { stop.ask($0) }) == .pasted)
+        #expect(stop.stages == [.check, .beforeKeystroke])
+        #expect(keyboard.posted == [9])
     }
 
     @Test func givesUpIfKeysStayHeld() async {
@@ -209,5 +332,146 @@ struct PasteTests {
         // snapshot the second one took was the original, not "first".
         #expect(clipboard.restores == 2)
         #expect(clipboard.contents == [["public.utf8-plain-text": Data("old".utf8)]])
+    }
+}
+
+/// A Throw Away mark for paste tests: records the stages it's asked at.
+final class StopFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+    private var asked: [PasteStage] = []
+    func set() { lock.withLock { stopped = true } }
+    var stages: [PasteStage] { lock.withLock { asked } }
+    func ask(_ stage: PasteStage) -> Bool {
+        lock.withLock {
+            asked.append(stage)
+            return stopped
+        }
+    }
+}
+
+final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var number = 0
+    func set(_ value: Int) { lock.withLock { number = value } }
+    var value: Int { lock.withLock { number } }
+}
+
+struct PasteAgainTests {
+    func row(_ id: Int64, status: String = "transcribed", raw: String? = "raw text", pasted: String? = nil,
+             cleaned: String? = nil) -> ChunkSummary {
+        ChunkSummary(id: id, status: status, error: nil, rawText: raw, pastedText: pasted, cleanedText: cleaned,
+                     durationMs: 1000, endReason: "muteButton",
+                     endedAt: Date(), audioFormat: "flac", audioSampleRate: 16_000, audioBytes: 100)
+    }
+
+    @Test func pastesTheDeliveredTextOfTheNewestThought() {
+        var memory = PasteAgain()
+        memory.started(id: 1)
+        memory.delivered(id: 1, text: "Run the tests.", outcome: .pasted)
+        #expect(memory.text(waiting: nil, newest: row(1))! == (1, "Run the tests."))
+        // Waiting text comes first.
+        #expect(memory.text(waiting: (2, "Waiting."), newest: row(1))! == (2, "Waiting."))
+    }
+
+    /// A row this run never saw (saved before the app restarted): its raw
+    /// text, since nothing is in flight for it.
+    @Test func rowFromBeforeThisRunPastesItsRawText() {
+        #expect(PasteAgain().text(waiting: nil, newest: row(5))! == (5, "raw text"))
+    }
+
+    /// After a restart, a row that was pasted cleaned pastes the cleaned
+    /// text again; one held as waiting (nothing pasted yet) its cleaned text.
+    @Test func rowFromBeforeThisRunPastesWhatWasDelivered() {
+        let pasted = row(5, pasted: "Run the tests.", cleaned: "Run the tests.")
+        #expect(PasteAgain().text(waiting: nil, newest: pasted)! == (5, "Run the tests."))
+        let waiting = row(6, cleaned: "Deploy it.")
+        #expect(PasteAgain().text(waiting: nil, newest: waiting)! == (6, "Deploy it."))
+    }
+
+    /// Paste here picks the text, waits for the panel to close, then asks
+    /// again: thrown away (or replaced by a newer thought) during the wait
+    /// means nothing is pasted.
+    @Test func pasteHereRechecksAfterItsWait() {
+        var memory = PasteAgain()
+        memory.started(id: 3)
+        memory.delivered(id: 3, text: "Held.", outcome: .waiting(.targetMoved))
+        #expect(memory.recheck(id: 3, waiting: (3, "Held."), newest: row(3))! == (3, "Held."))
+        // A newer thought became the newest during the wait.
+        memory.started(id: 4)
+        memory.delivered(id: 4, text: "Newer.", outcome: .pasted)
+        #expect(memory.recheck(id: 3, waiting: nil, newest: row(4)) == nil)
+        // Thrown away during the wait.
+        memory.thrownAway(id: 4)
+        #expect(memory.recheck(id: 4, waiting: nil, newest: row(4)) == nil)
+    }
+
+    /// B is transcribed (the newest row) but still being cleaned: Paste last
+    /// again pastes nothing until B is delivered, never B's raw text early.
+    @Test func thoughtInFlightIsNotPastedUntilDelivered() {
+        var memory = PasteAgain()
+        memory.started(id: 1)
+        memory.delivered(id: 1, text: "First.", outcome: .pasted)
+        memory.started(id: 2)
+        #expect(memory.text(waiting: nil, newest: row(2)) == nil)
+        // Not the older thought either.
+        #expect(memory.lastDelivered! == (1, "First."))
+        memory.delivered(id: 2, text: "Second, cleaned.", outcome: .pasted)
+        #expect(memory.text(waiting: nil, newest: row(2))! == (2, "Second, cleaned."))
+    }
+
+    /// B in flight and marked by Throw Away: nothing before its delivery
+    /// (PasteAgain isn't told about the mark), and nothing after it's
+    /// discarded or its paste is stopped.
+    @Test func markedThoughtInFlightIsNeverPasted() {
+        for stoppedDuringPaste in [false, true] {
+            var memory = PasteAgain()
+            memory.started(id: 1)
+            memory.delivered(id: 1, text: "First.", outcome: .pasted)
+            memory.started(id: 2)
+            #expect(memory.text(waiting: nil, newest: row(2)) == nil)
+            if stoppedDuringPaste {
+                memory.delivered(id: 2, text: "Second.", outcome: .stopped)
+            } else {
+                memory.thrownAway(id: 2)
+            }
+            #expect(memory.text(waiting: nil, newest: row(2)) == nil)
+        }
+    }
+
+    /// Throw Away stopped the paste before ⌘V (or the paste gave up after
+    /// the mark): nothing to paste again, even before the row's new status
+    /// is read back, and the older thought isn't pasted instead.
+    @Test func stoppedPasteIsNotPastedAgain() {
+        var memory = PasteAgain()
+        memory.delivered(id: 1, text: "First.", outcome: .pasted)
+        memory.started(id: 2)
+        memory.delivered(id: 2, text: "Second.", outcome: .stopped)
+        #expect(memory.text(waiting: nil, newest: row(2)) == nil)
+        #expect(memory.text(waiting: nil, newest: row(2, status: "discarded")) == nil)
+    }
+
+    /// The waiting row's Throw Away button, or the hotkey on Text waiting:
+    /// both drop the waiting text the same way.
+    @Test func droppedWaitingTextIsNotPastedAgain() {
+        var memory = PasteAgain()
+        memory.started(id: 3)
+        memory.delivered(id: 3, text: "Held.", outcome: .waiting(.targetMoved))
+        #expect(memory.text(waiting: (3, "Held."), newest: row(3))! == (3, "Held."))
+        memory.thrownAway(id: 3)
+        #expect(memory.lastDelivered == nil)
+        #expect(memory.text(waiting: nil, newest: row(3)) == nil)
+    }
+
+    /// Thrown away before its paste started (during cleanup), or while it
+    /// was being said: never delivered, never pasted again.
+    @Test func thoughtThrownAwayBeforeItsPasteIsNotPastedAgain() {
+        var memory = PasteAgain()
+        memory.delivered(id: 1, text: "First.", outcome: .pasted)
+        memory.started(id: 2)
+        memory.thrownAway(id: 2)
+        #expect(memory.text(waiting: nil, newest: row(2)) == nil)
+        // Read from the database after a restart: the row says discarded.
+        #expect(PasteAgain().text(waiting: nil, newest: row(2, status: "discarded")) == nil)
     }
 }

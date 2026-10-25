@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "properties": {
+    "cleaned": {"type": "string"}
+  },
+  "required": ["cleaned"],
+  "additionalProperties": false
+}
