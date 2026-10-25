@@ -19,7 +19,7 @@ public enum HotkeyAction: String, CaseIterable, Sendable {
         case .pasteLast:
             "Pastes the last text again where your cursor is now, including text that's waiting."
         case .throwAway:
-            "Ends the thought in progress, or drops waiting text, without pasting. The audio is still saved."
+            "Acts on what the menu-bar icon shows: ends the thought you're saying, drops the newest thought still being cleaned (up to the moment it's pasted), or drops waiting text. Nothing is pasted, and the audio is still saved."
         }
     }
 

@@ -47,13 +47,20 @@ final class FakeClipboard: Clipboard, @unchecked Sendable {
 final class FakeKeyboard: Keyboard, @unchecked Sendable {
     private let lock = NSLock()
     var heldUntil: ContinuousClock.Instant?
+    /// Keys held until the test lets go; `heldChecks` counts the polls.
+    var holding = false
+    private var _heldChecks = 0
+    var heldChecks: Int { lock.withLock { _heldChecks } }
     var keyCode: UInt16 = 9
     var posted: [UInt16] = []
     var accessibility = true
     var onPost: (() -> Void)?
 
     func modifiersHeld() -> Bool {
-        lock.withLock { heldUntil.map { ContinuousClock.now < $0 } ?? false }
+        lock.withLock {
+            _heldChecks += 1
+            return holding || (heldUntil.map { ContinuousClock.now < $0 } ?? false)
+        }
     }
     func pasteKeyCode() -> UInt16 { keyCode }
     func postCommand(keyCode: UInt16) {
@@ -125,6 +132,48 @@ struct PasteTests {
         let started = ContinuousClock.now
         #expect(await paster.paste("hello", into: editorBox) == .pasted)
         #expect(ContinuousClock.now - started >= .milliseconds(100))
+    }
+
+    /// Throw Away during the wait for held keys: nothing is written to the
+    /// clipboard and nothing is pasted.
+    @Test func stopDuringTheKeyWaitPastesNothing() async {
+        let clipboard = FakeClipboard()
+        let keyboard = FakeKeyboard()
+        keyboard.holding = true
+        var slow = settings()
+        slow.modifierWait = .seconds(30)
+        let paster = Paster(clipboard: clipboard, keyboard: keyboard, focus: FakeFocus(editorBox), settings: slow)
+        let stop = StopFlag()
+        let paste = Task { await paster.paste("hello", into: editorBox, shouldStop: { stage in stop.ask(stage) }) }
+        await waitUntil { keyboard.heldChecks > 0 }
+        stop.set()
+        keyboard.holding = false
+        #expect(await paste.value == .stopped)
+        #expect(stop.stages == [.afterKeyWait])
+        #expect(clipboard.writes.isEmpty && clipboard.restores == 0)
+        #expect(keyboard.posted.isEmpty)
+    }
+
+    /// Throw Away at the last moment: our text was on the clipboard, so the
+    /// old contents are put back, and ⌘V never happens.
+    @Test func stopRightBeforeTheKeystrokeRestoresTheClipboard() async {
+        let clipboard = FakeClipboard()
+        let keyboard = FakeKeyboard()
+        let paster = Paster(clipboard: clipboard, keyboard: keyboard, focus: FakeFocus(editorBox), settings: settings())
+        let outcome = await paster.paste("hello", into: editorBox, shouldStop: { $0 == .beforeKeystroke })
+        #expect(outcome == .stopped)
+        #expect(clipboard.writes == ["hello"] && clipboard.restores == 1)
+        #expect(clipboard.contents == [["public.utf8-plain-text": Data("old".utf8)]])
+        #expect(keyboard.posted.isEmpty)
+    }
+
+    @Test func asksAtBothStagesWhenNotStopped() async {
+        let stop = StopFlag()
+        let keyboard = FakeKeyboard()
+        let paster = Paster(clipboard: FakeClipboard(), keyboard: keyboard, focus: FakeFocus(editorBox), settings: settings())
+        #expect(await paster.paste("hello", into: editorBox, shouldStop: { stop.ask($0) }) == .pasted)
+        #expect(stop.stages == [.afterKeyWait, .beforeKeystroke])
+        #expect(keyboard.posted == [9])
     }
 
     @Test func givesUpIfKeysStayHeld() async {
@@ -209,5 +258,20 @@ struct PasteTests {
         // snapshot the second one took was the original, not "first".
         #expect(clipboard.restores == 2)
         #expect(clipboard.contents == [["public.utf8-plain-text": Data("old".utf8)]])
+    }
+}
+
+/// A Throw Away mark for paste tests: records the stages it's asked at.
+final class StopFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+    private var asked: [PasteStage] = []
+    func set() { lock.withLock { stopped = true } }
+    var stages: [PasteStage] { lock.withLock { asked } }
+    func ask(_ stage: PasteStage) -> Bool {
+        lock.withLock {
+            asked.append(stage)
+            return stopped
+        }
     }
 }

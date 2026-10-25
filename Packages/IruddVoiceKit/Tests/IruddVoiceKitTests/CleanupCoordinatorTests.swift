@@ -91,9 +91,15 @@ actor Gate {
 }
 
 /// Waits until `condition` holds, checking every 5 ms, for up to 10 s.
-func waitUntil(_ condition: @Sendable () async throws -> Bool) async rethrows {
+/// Records a test issue if it never does.
+func waitUntil(_ condition: @Sendable () async throws -> Bool,
+               sourceLocation: SourceLocation = #_sourceLocation) async rethrows {
     let deadline = ContinuousClock.now + .seconds(10)
-    while try await !condition(), ContinuousClock.now < deadline {
+    while try await !condition() {
+        guard ContinuousClock.now < deadline else {
+            Issue.record("condition not met", sourceLocation: sourceLocation)
+            return
+        }
         try? await Task.sleep(for: .milliseconds(5))
     }
 }
@@ -759,19 +765,41 @@ struct DeliveryLineTests {
         #expect(line.throwAwayNewest() == nil)
     }
 
-    /// Throw Away while a thought is being pasted can't stop that paste,
-    /// so it marks nothing (and leaves no mark behind); a newer thought
-    /// still being made is marked instead.
-    @Test func throwAwayDuringThePaste() async {
+    /// Throw Away while a thought is being pasted, before ⌘V: the paste
+    /// asks `shouldStop` and stops. The mark goes with the delivery.
+    @Test func throwAwayDuringThePasteStopsIt() async {
+        let line = DeliveryLine<String>()
+        let log = Log()
+        let keyWait = Gate()
+        line.add(make: { _ in "A" }, deliver: { number, item, thrownAway in
+            log.add("pasting \(item)")
+            // The paste waits for held keys, then asks.
+            await keyWait.wait()
+            let stop = line.shouldStop(number, at: .afterKeyWait)
+            log.add("\(item) \(thrownAway || stop ? "stopped" : "pasted")")
+        })
+        await waitUntil { log.all == ["pasting A"] }
+        #expect(line.throwAwayNewest() == 1)
+        await keyWait.open()
+        await waitUntil { @MainActor in !line.isBusy }
+        #expect(log.all == ["pasting A", "A stopped"])
+        #expect(line.marked.isEmpty)
+    }
+
+    /// Once the paste is past its last check (⌘V is next), Throw Away can't
+    /// mark it, and no mark is left behind; a newer thought still being
+    /// made is marked instead.
+    @Test func throwAwayAfterTheLastCheckMarksNothing() async {
         let line = DeliveryLine<String>()
         let log = Log()
         let pasting = Gate(), makingB = Gate()
-        line.add(make: { _ in "A" }, deliver: { _, item, thrownAway in
-            log.add("pasting \(item)")
+        line.add(make: { _ in "A" }, deliver: { number, item, _ in
+            let stop = line.shouldStop(number, at: .beforeKeystroke)
+            log.add("committed \(item)")
             await pasting.wait()
-            log.add("\(item) \(thrownAway ? "discarded" : "pasted")")
+            log.add("\(item) \(stop ? "stopped" : "pasted")")
         })
-        await waitUntil { log.all == ["pasting A"] }
+        await waitUntil { log.all == ["committed A"] }
         #expect(line.throwAwayNewest() == nil)
         #expect(line.marked.isEmpty)
 
@@ -783,7 +811,7 @@ struct DeliveryLineTests {
         await pasting.open()
         await makingB.open()
         await last.value
-        #expect(log.all == ["pasting A", "A pasted", "B discarded"])
+        #expect(log.all == ["committed A", "A pasted", "B discarded"])
         #expect(line.marked.isEmpty)
         #expect(!line.isBusy)
     }
@@ -800,14 +828,44 @@ struct DeliveryLineTests {
 }
 
 struct ThrowAwayTargetTests {
-    @Test func followsWhatTheMenuShows() {
-        // A waits in Text waiting while B is still being cleaned.
-        #expect(ThrowAwayTarget.pick(activity: .textWaiting, hasWaitingText: true, deliveryBusy: true) == .waitingText)
+    typealias Case = (activity: AppStatus.Activity, waiting: Bool, busy: Bool, hotkey: ThrowAwayTarget)
+
+    /// Every combination of what the icon shows, waiting text and thoughts
+    /// in flight, and what the hotkey does.
+    static let hotkeyTable: [Case] = [
+        (.hearing, false, false, .thoughtBeingHeard),
+        (.hearing, false, true, .thoughtBeingHeard),
+        (.hearing, true, false, .thoughtBeingHeard),
+        (.hearing, true, true, .thoughtBeingHeard),
+        (.cleaningUp, false, false, .nothing),
+        (.cleaningUp, false, true, .newestInFlight),
+        (.cleaningUp, true, false, .waitingText),
         // B ended after A was held: the icon says Cleaning up, so B goes.
-        #expect(ThrowAwayTarget.pick(activity: .cleaningUp, hasWaitingText: true, deliveryBusy: true) == .newestInFlight)
-        #expect(ThrowAwayTarget.pick(activity: .hearing, hasWaitingText: true, deliveryBusy: true) == .thoughtBeingHeard)
-        #expect(ThrowAwayTarget.pick(activity: .idle, hasWaitingText: false, deliveryBusy: false) == .nothing)
-        #expect(ThrowAwayTarget.pick(activity: .idle, hasWaitingText: true, deliveryBusy: false) == .waitingText)
-        #expect(ThrowAwayTarget.pick(activity: .cleaningUp, hasWaitingText: false, deliveryBusy: true) == .newestInFlight)
+        (.cleaningUp, true, true, .newestInFlight),
+        (.textWaiting, false, false, .nothing),
+        (.textWaiting, false, true, .newestInFlight),
+        (.textWaiting, true, false, .waitingText),
+        // A waits in Text waiting while B is still cleaning: A goes.
+        (.textWaiting, true, true, .waitingText),
+        (.idle, false, false, .nothing),
+        (.idle, false, true, .newestInFlight),
+        (.idle, true, false, .waitingText),
+        (.idle, true, true, .waitingText),
+    ]
+
+    @Test(arguments: hotkeyTable.indices)
+    func hotkey(row: Int) {
+        let c = Self.hotkeyTable[row]
+        #expect(ThrowAwayTarget.pick(.hotkey, activity: c.activity, hasWaitingText: c.waiting, deliveryBusy: c.busy)
+                == c.hotkey, "\(c)")
+    }
+
+    /// The button on the waiting row always drops that text, even while
+    /// hearing or while another thought is cleaning.
+    @Test(arguments: hotkeyTable.indices)
+    func waitingRowButton(row: Int) {
+        let c = Self.hotkeyTable[row]
+        #expect(ThrowAwayTarget.pick(.waitingRow, activity: c.activity, hasWaitingText: c.waiting, deliveryBusy: c.busy)
+                == (c.waiting ? .waitingText : .nothing), "\(c)")
     }
 }

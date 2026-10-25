@@ -89,6 +89,17 @@ public enum PasteOutcome: Equatable, Sendable {
     case pasted
     /// Not pasted; the text waits for Paste here or Copy.
     case waiting(WaitReason)
+    /// Throw Away came before ⌘V: nothing was pasted, and the clipboard is
+    /// as it was.
+    case stopped
+}
+
+/// Where a paste asks whether to stop: after waiting for held keys, and
+/// right before ⌘V. After `beforeKeystroke` says go, the paste can't be
+/// stopped any more.
+public enum PasteStage: Sendable {
+    case afterKeyWait
+    case beforeKeystroke
 }
 
 public enum WaitReason: String, Equatable, Sendable {
@@ -102,9 +113,8 @@ public enum WaitReason: String, Equatable, Sendable {
         switch self {
         case .targetMoved: "You moved to another app or text box, so nothing was pasted."
         case .keysHeld: "Keys were held down for too long, so nothing was pasted."
-        case .clipboardDenied: "The app isn't allowed to read the clipboard, so it couldn't be put back after pasting."
-        case .clipboardIncomplete: "Part of the clipboard couldn't be read, so it couldn't be put back after pasting."
-        case .noAccessibility: "Pasting needs Accessibility permission."
+        case .clipboardDenied, .clipboardIncomplete: "Not pasted: the app can't read the clipboard to put it back afterwards."
+        case .noAccessibility: "Not pasted: pasting needs Accessibility permission."
         }
     }
 }
@@ -136,11 +146,14 @@ public actor Paster {
     }
 
     /// Pastes after any paste already in progress has finished.
-    public func paste(_ text: String, into target: PasteTarget) async -> PasteOutcome {
+    /// `shouldStop` is asked at each `PasteStage`; true stops the paste
+    /// (Throw Away), with nothing pasted and the clipboard put back.
+    public func paste(_ text: String, into target: PasteTarget,
+                      shouldStop: @escaping @Sendable (PasteStage) async -> Bool = { _ in false }) async -> PasteOutcome {
         let previous = queue
         let job = Task { [self] () -> PasteOutcome in
             await previous?.value
-            return await pasteNow(text, into: target)
+            return await pasteNow(text, into: target, shouldStop: shouldStop)
         }
         queue = Task { _ = await job.value }
         return await job.value
@@ -152,7 +165,8 @@ public actor Paster {
         return await paste(text, into: target)
     }
 
-    private func pasteNow(_ text: String, into target: PasteTarget) async -> PasteOutcome {
+    private func pasteNow(_ text: String, into target: PasteTarget,
+                          shouldStop: @Sendable (PasteStage) async -> Bool) async -> PasteOutcome {
         guard keyboard.canPost() else { return .waiting(.noAccessibility) }
 
         // A shortcut's ⌘ still held would turn ⌘V into something else.
@@ -162,6 +176,7 @@ public actor Paster {
             if clock.now >= deadline { return .waiting(.keysHeld) }
             try? await Task.sleep(for: settings.modifierPoll)
         }
+        if await shouldStop(.afterKeyWait) { return .stopped }
 
         guard let now = focus.current(), now.isSame(as: target) else { return .waiting(.targetMoved) }
 
@@ -174,10 +189,14 @@ public actor Paster {
 
         let ours = clipboard.writeDictation(text)
 
-        // Last check right before the keystroke.
+        // Last checks right before the keystroke.
         guard let still = focus.current(), still.isSame(as: target) else {
             if clipboard.changeCount == ours { clipboard.restore(saved) }
             return .waiting(.targetMoved)
+        }
+        if await shouldStop(.beforeKeystroke) {
+            if clipboard.changeCount == ours { clipboard.restore(saved) }
+            return .stopped
         }
         keyboard.postCommand(keyCode: keyboard.pasteKeyCode())
 

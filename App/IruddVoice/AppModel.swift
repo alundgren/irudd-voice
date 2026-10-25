@@ -367,9 +367,18 @@ final class AppModel {
             lastDelivered = (id, text)
             var waitReason: WaitReason?
             if let target {
-                let outcome = await paster.paste(text, into: target)
+                // Throw Away can still stop it until right before ⌘V.
+                let outcome = await paster.paste(text, into: target, shouldStop: { [delivery] stage in
+                    await delivery.shouldStop(number, at: stage)
+                })
                 record(outcome, id: id, text: text, target: target)
-                if case .waiting(let reason) = outcome { waitReason = reason }
+                switch outcome {
+                case .pasted: break
+                case .waiting(let reason): waitReason = reason
+                case .stopped:
+                    clearPreview(number)
+                    return
+                }
             } else {
                 hold(WaitingText(id: id, text: text, reason: .targetMoved))
                 waitReason = .targetMoved
@@ -416,13 +425,23 @@ final class AppModel {
         let app = target?.appName ?? "?"
         switch outcome {
         case .pasted:
-            if waiting?.id == id { waiting = nil }
+            if waiting?.id == id { waitingCleared() }
             Task { try? await store?.markPaste(id: id, status: "pasted", text: text) }
             log(.info, "paste", "Pasted \(text.count) characters into \(app) (#\(id))")
         case .waiting(let reason):
             hold(WaitingText(id: id, text: text, reason: reason))
             log(.warning, "paste", "Not pasted into \(app): \(reason.rawValue) (#\(id))")
+        case .stopped:
+            Task { try? await store?.markDiscarded(id: id) }
+            log(.info, "paste", "Thrown away just before pasting, not pasted (#\(id))")
         }
+    }
+
+    /// The waiting text is gone (pasted, copied or thrown away). The icon
+    /// goes back to Cleaning up if another thought is still being made.
+    private func waitingCleared() {
+        waiting = nil
+        if activity == .textWaiting { activity = delivery.isBusy ? .cleaningUp : .idle }
     }
 
     private func hold(_ text: WaitingText) {
@@ -442,7 +461,6 @@ final class AppModel {
             let target = focus.current()
             let outcome = await paster.pasteHere(text)
             record(outcome, id: id, text: text, target: target)
-            if outcome == .pasted, activity == .textWaiting { activity = .idle }
         }
     }
 
@@ -451,27 +469,36 @@ final class AppModel {
         guard let waiting else { return }
         SystemClipboard().copy(waiting.text)
         Task { try? await store?.markPaste(id: waiting.id, status: "copied", text: waiting.text) }
-        self.waiting = nil
-        if activity == .textWaiting { activity = .idle }
+        waitingCleared()
     }
 
-    /// Throw away: ends the thought being heard, drops the waiting text the
-    /// menu shows, or keeps the newest thought still being transcribed or
-    /// cleaned from being pasted (`ThrowAwayTarget`).
+    /// The Throw Away hotkey: ends the thought being heard, drops the
+    /// waiting text the menu shows, or keeps the newest thought still being
+    /// transcribed, cleaned or pasted from being pasted (`ThrowAwayTarget`).
     func throwAway() {
-        switch ThrowAwayTarget.pick(activity: activity, hasWaitingText: waiting != nil, deliveryBusy: delivery.isBusy) {
+        throwAway(.hotkey)
+    }
+
+    /// The Throw Away button on the waiting text: drops that text, whatever
+    /// else is going on.
+    func throwAwayWaiting() {
+        throwAway(.waitingRow)
+    }
+
+    private func throwAway(_ source: ThrowAwayTarget.Source) {
+        switch ThrowAwayTarget.pick(source, activity: activity, hasWaitingText: waiting != nil,
+                                    deliveryBusy: delivery.isBusy) {
         case .thoughtBeingHeard:
             capture.finishThought(.thrownAway)
         case .newestInFlight:
             if delivery.throwAwayNewest() == nil {
-                log(.info, "paste", "Throw away came too late: the thought was already being pasted")
+                log(.info, "paste", "Throw away came too late: the thought was already pasted")
             }
         case .waitingText:
             guard let waiting else { return }
             Task { try? await store?.markDiscarded(id: waiting.id) }
             log(.info, "paste", "Waiting text thrown away (#\(waiting.id))")
-            self.waiting = nil
-            if activity == .textWaiting { activity = delivery.isBusy ? .cleaningUp : .idle }
+            waitingCleared()
         case .nothing:
             break
         }
@@ -496,7 +523,6 @@ final class AppModel {
                 let target = focus.current()
                 let outcome = await paster.pasteHere(text)
                 record(outcome, id: id, text: text, target: target)
-                if outcome == .pasted, activity == .textWaiting { activity = .idle }
             }
         case .throwAway:
             throwAway()
