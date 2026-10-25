@@ -109,8 +109,13 @@ up** meanwhile; a 50-word thought takes about 1.2 s.
   raw, never a mix.
 - **Order:** thoughts are pasted in the order they ended. A short thought
   that's ready first waits for a long one before it.
-- **Throw away** while text is being made (transcribed or cleaned) drops
-  the newest such thought, and only that one.
+- **Throw away** (the hotkey) follows what the menu-bar icon shows. On
+  **Text waiting** it drops the waiting text. On **Cleaning up** it drops
+  the newest thought still being transcribed, cleaned or pasted, and only
+  that one. It can stop a paste until right before ⌘V: while the app waits
+  for held keys, nothing has been pasted yet, and the clipboard is put
+  back. The **Throw Away** button next to waiting text always drops that
+  text.
 - **Switching models** only happens when no thought is in progress. The
   app checks the active model every 10 s when idle and after each thought.
 - **Training** asks the app to unload the model while it runs (the
@@ -141,10 +146,17 @@ up** meanwhile; a 50-word thought takes about 1.2 s.
   back, so the text waits instead of being pasted. That's why setup asks
   for it.
 - Hotkeys (none set by default, Settings → Hotkeys): **Start/stop
-  thought**, **Paste last again** (pastes the waiting or last text where
-  your cursor is now) and **Throw away current** (ends the thought in
-  progress or drops waiting text; the audio is still saved and the row is
-  marked discarded).
+  thought**, **Paste last again** (pastes the waiting text, or else the
+  newest thought's text as it was pasted, where your cursor is now) and
+  **Throw away current**. Thrown-away text is never pasted again: if the
+  newest thought was thrown away, Paste last again pastes nothing, not an
+  older thought. While the newest thought is still being transcribed,
+  cleaned or pasted, Paste last again pastes nothing (waiting text aside)
+  until that thought is delivered, so its raw text never goes out early. Throw away acts on what
+  the icon shows: while **Hearing you** it ends the thought, on **Cleaning
+  up** it drops the newest thought still being cleaned (up to the moment
+  it's pasted), and on **Text waiting** it drops the waiting text. Nothing
+  is pasted; the audio is still saved and the row is marked discarded.
 
 ## Rules the app never breaks
 

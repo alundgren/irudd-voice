@@ -197,7 +197,7 @@ private struct WaitingTextRow: View {
                 .help("Closes this panel and pastes where your cursor is")
                 Button("Copy") { model.copyWaiting() }
                 Spacer()
-                Button("Throw Away", role: .destructive) { model.throwAway() }
+                Button("Throw Away", role: .destructive) { model.throwAwayWaiting() }
             }
             .controlSize(.small)
         }

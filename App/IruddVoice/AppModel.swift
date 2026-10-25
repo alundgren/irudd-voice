@@ -71,8 +71,8 @@ final class AppModel {
     private(set) var modelOverview: ModelOverview?
     /// Why cleanup can't run at all (the app is missing its prompt file).
     private(set) var cleanupProblem: String?
-    /// The text last pasted (or held) for a row, for Paste last again.
-    private var lastDelivered: (id: Int64, text: String)?
+    /// What Paste last again pastes; never a thrown-away thought.
+    private var pasteAgain = PasteAgain()
 
     // MARK: Hotkeys and pasting
 
@@ -298,9 +298,14 @@ final class AppModel {
                 ? "Speech recognition didn't start for this thought."
                 : SpeechSetupError.assetsMissing.description)
         delivery.add(make: { [weak self] number in
-            guard let id = await recorder.record(thought, meta: meta, transcription: transcription, saved: { _ in
-                Task { @MainActor in await self?.refreshDatabaseInfo() }
+            guard let id = await recorder.record(thought, meta: meta, transcription: transcription, saved: { id in
+                Task { @MainActor in
+                    // Before the row can show up as the newest one.
+                    self?.pasteAgain.started(id: id)
+                    await self?.refreshDatabaseInfo()
+                }
             }) else { return .notSaved }
+            await self?.markStarted(id)
             await self?.refreshDatabaseInfo()
             guard !discard, let row = try? await store.chunk(id: id), row.status == "transcribed",
                   let raw = row.rawText, !raw.isEmpty else { return .noText(id: id) }
@@ -311,6 +316,12 @@ final class AppModel {
         }, deliver: { [weak self] number, made, thrownAway in
             await self?.deliver(made, number: number, discard: discard || thrownAway, target: pasteTarget)
         })
+    }
+
+    /// The thought's row is in flight for Paste last again. Also called
+    /// from `saved`; this one runs before the transcribed row is read back.
+    private func markStarted(_ id: Int64) {
+        pasteAgain.started(id: id)
     }
 
     /// Transcript mode: what was heard, while it's being cleaned.
@@ -351,6 +362,7 @@ final class AppModel {
         case .noText(let id):
             clearPreview(number)
             if discard {
+                pasteAgain.thrownAway(id: id)
                 try? await store.markDiscarded(id: id)
                 log(.info, "paste", "Thrown away, not pasted (#\(id))")
             } else {
@@ -359,22 +371,36 @@ final class AppModel {
         case .text(let id, let raw, let cleanup):
             if discard {
                 clearPreview(number)
+                pasteAgain.thrownAway(id: id)
                 try? await store.markDiscarded(id: id)
                 log(.info, "paste", "Thrown away, not pasted (#\(id))")
                 return
             }
             let text = cleanup?.pasteText ?? raw
-            lastDelivered = (id, text)
-            var pasted = false
+            var waitReason: WaitReason?
             if let target {
-                let outcome = await paster.paste(text, into: target)
+                // Throw Away can still stop it until right before ⌘V.
+                var outcome = await paster.paste(text, into: target, shouldStop: { [delivery] stage in
+                    await delivery.shouldStop(number, at: stage)
+                })
+                // Marked after the paste gave up: thrown away, not waiting.
+                if case .waiting = outcome, delivery.isThrownAway(number) { outcome = .stopped }
+                pasteAgain.delivered(id: id, text: text, outcome: outcome)
                 record(outcome, id: id, text: text, target: target)
-                pasted = outcome == .pasted
+                switch outcome {
+                case .pasted: break
+                case .waiting(let reason): waitReason = reason
+                case .stopped:
+                    clearPreview(number)
+                    return
+                }
             } else {
+                pasteAgain.delivered(id: id, text: text, outcome: .waiting(.targetMoved))
                 hold(WaitingText(id: id, text: text, reason: .targetMoved))
+                waitReason = .targetMoved
             }
             if activity != .hearing {
-                showPreview(FinishedThought(number: number, heard: raw, text: text, waiting: !pasted,
+                showPreview(FinishedThought(number: number, heard: raw, text: text, waitReason: waitReason,
                                             rawReason: cleanup?.plainReason))
             }
         }
@@ -415,13 +441,23 @@ final class AppModel {
         let app = target?.appName ?? "?"
         switch outcome {
         case .pasted:
-            if waiting?.id == id { waiting = nil }
+            if waiting?.id == id { waitingCleared() }
             Task { try? await store?.markPaste(id: id, status: "pasted", text: text) }
             log(.info, "paste", "Pasted \(text.count) characters into \(app) (#\(id))")
         case .waiting(let reason):
             hold(WaitingText(id: id, text: text, reason: reason))
             log(.warning, "paste", "Not pasted into \(app): \(reason.rawValue) (#\(id))")
+        case .stopped:
+            Task { try? await store?.markDiscarded(id: id) }
+            log(.info, "paste", "Thrown away just before pasting, not pasted (#\(id))")
         }
+    }
+
+    /// The waiting text is gone (pasted, copied or thrown away). The icon
+    /// goes back to Cleaning up if another thought is still being made.
+    private func waitingCleared() {
+        waiting = nil
+        if activity == .textWaiting { activity = delivery.isBusy ? .cleaningUp : .idle }
     }
 
     private func hold(_ text: WaitingText) {
@@ -441,7 +477,6 @@ final class AppModel {
             let target = focus.current()
             let outcome = await paster.pasteHere(text)
             record(outcome, id: id, text: text, target: target)
-            if outcome == .pasted, activity == .textWaiting { activity = .idle }
         }
     }
 
@@ -450,33 +485,44 @@ final class AppModel {
         guard let waiting else { return }
         SystemClipboard().copy(waiting.text)
         Task { try? await store?.markPaste(id: waiting.id, status: "copied", text: waiting.text) }
-        self.waiting = nil
-        if activity == .textWaiting { activity = .idle }
+        waitingCleared()
     }
 
-    /// Throw away: ends the thought in progress, or keeps the newest thought
-    /// still being transcribed or cleaned from being pasted, or drops
-    /// waiting text.
+    /// The Throw Away hotkey: ends the thought being heard, drops the
+    /// waiting text the menu shows, or keeps the newest thought still being
+    /// transcribed, cleaned or pasted from being pasted (`ThrowAwayTarget`).
     func throwAway() {
-        if activity == .hearing {
+        throwAway(.hotkey)
+    }
+
+    /// The Throw Away button on the waiting text: drops that text, whatever
+    /// else is going on.
+    func throwAwayWaiting() {
+        throwAway(.waitingRow)
+    }
+
+    private func throwAway(_ source: ThrowAwayTarget.Source) {
+        switch ThrowAwayTarget.pick(source, activity: activity, hasWaitingText: waiting != nil,
+                                    deliveryBusy: delivery.isBusy) {
+        case .thoughtBeingHeard:
             capture.finishThought(.thrownAway)
-        } else if delivery.isBusy {
-            delivery.throwAwayNewest()
-        } else if let waiting {
+        case .newestInFlight:
+            if delivery.throwAwayNewest() == nil {
+                log(.info, "paste", "Throw away came too late: the thought was already pasted")
+            }
+        case .waitingText:
+            guard let waiting else { return }
             Task { try? await store?.markDiscarded(id: waiting.id) }
             log(.info, "paste", "Waiting text thrown away (#\(waiting.id))")
-            self.waiting = nil
-            if activity == .textWaiting { activity = .idle }
+            pasteAgain.thrownAway(id: waiting.id)
+            waitingCleared()
+        case .nothing:
+            break
         }
     }
 
     private func textToPasteAgain() -> (Int64, String)? {
-        if let waiting { return (waiting.id, waiting.text) }
-        if let lastDelivered, lastDelivered.id == lastChunk?.id { return lastDelivered }
-        if let last = lastChunk, last.status == "transcribed", let text = last.rawText, !text.isEmpty {
-            return (last.id, text)
-        }
-        return nil
+        pasteAgain.text(waiting: waiting.map { ($0.id, $0.text) }, newest: lastChunk).map { ($0.id, $0.text) }
     }
 
     private func hotkeyPressed(_ action: HotkeyAction) {
@@ -489,7 +535,6 @@ final class AppModel {
                 let target = focus.current()
                 let outcome = await paster.pasteHere(text)
                 record(outcome, id: id, text: text, target: target)
-                if outcome == .pasted, activity == .textWaiting { activity = .idle }
             }
         case .throwAway:
             throwAway()
@@ -706,7 +751,9 @@ struct FinishedThought: Equatable {
     struct Result: Equatable {
         /// What was pasted, or is waiting to be.
         let text: String
-        let waiting: Bool
+        /// Why it's waiting instead of pasted; nil when it was pasted.
+        let waitReason: WaitReason?
+        var waiting: Bool { waitReason != nil }
         /// Why the heard text was used instead of the cleaned text, in
         /// plain words; nil when the cleaned text was used.
         let rawReason: String?
@@ -726,11 +773,11 @@ struct FinishedThought: Equatable {
         result = nil
     }
 
-    init(number: Int, heard: String, text: String, waiting: Bool, rawReason: String?) {
+    init(number: Int, heard: String, text: String, waitReason: WaitReason?, rawReason: String?) {
         self.number = number
         self.heard = heard
         let words = WordDiff.compare(heard: heard, pasted: text)
-        result = Result(text: text, waiting: waiting, rawReason: rawReason,
+        result = Result(text: text, waitReason: waitReason, rawReason: rawReason,
                         heardWords: words.heard, textWords: words.pasted)
     }
 }
