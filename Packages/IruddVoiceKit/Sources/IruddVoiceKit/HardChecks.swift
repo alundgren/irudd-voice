@@ -348,6 +348,8 @@ public enum HardChecks {
     /// Finds spoken corrections. Returns (replaced word indexes, marker word
     /// indexes). A marker counts only when the next word restates something
     /// from the three words before it: the same word, or a number after a number.
+    /// The replaced words run from the earliest restated word up to the
+    /// marker, so "don't run five no six tests" replaces only "five".
     static func correctedSpans(_ tokens: [String]) -> (replaced: Set<Int>, markers: Set<Int>) {
         var replaced: Set<Int> = []
         var markers: Set<Int> = []
@@ -355,14 +357,15 @@ public enum HardChecks {
             for marker in correctionMarkers {
                 let parts = marker.split(separator: " ").map(String.init)
                 guard Array(tokens[index..<min(tokens.count, index + parts.count)]) == parts else { continue }
-                let before = Array(tokens[max(0, index - 3)..<index])
+                let first = max(0, index - 3)
+                let before = Array(tokens[first..<index])
                 let afterStart = index + parts.count
                 let after = Array(tokens[min(tokens.count, afterStart)..<min(tokens.count, afterStart + 4)])
                 if before.isEmpty || after.isEmpty { continue }
-                let restated = after.contains { !functionWords.contains($0) && before.contains($0) }
-                    || (isNumber(after[0]) && before.contains(where: isNumber))
-                if restated {
-                    replaced.formUnion(max(0, index - 3)..<index)
+                var restated = before.indices.filter { !functionWords.contains(before[$0]) && after.contains(before[$0]) }
+                if isNumber(after[0]), let number = before.firstIndex(where: isNumber) { restated.append(number) }
+                if let start = restated.min() {
+                    replaced.formUnion((first + start)..<index)
                     markers.formUnion(index..<(index + parts.count))
                 }
             }

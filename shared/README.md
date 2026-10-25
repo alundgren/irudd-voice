@@ -132,8 +132,13 @@ letters longer than the suffix.
 `or rather`), take up to 3 words *before* and up to 4 words *after* it. It's a
 correction only if some word after it (that isn't a joining word) also
 appears before it, or the first word after it is a number and a number
-appears before it. If it is, the words before are *replaced* and the marker
-words are *markers*. Both are *ignored* below.
+appears before it. If it is, the marker words are *markers*, and the words
+before it are *replaced* starting at the earliest of: a word before that is
+restated after (not a joining word), and, when the first word after is a
+number, the first number before. The replaced words run from there up to the
+marker, never the whole 3-word window, so `don't run five, no, six tests`
+replaces only `five` and keeps `don't`. Replaced and marker words are
+*ignored* below.
 
 **Numbers** (`numbers_in`, applied to a word list). Walk the words keeping
 `total` (completed thousands/millions) and `current` (the part below the
@@ -202,9 +207,13 @@ The checks:
   words after its own fillers. Or the output has more than
   `max_output_words_ratio` × transcript words + `max_output_words_slack` words.
 - `question`: after leading fillers, the transcript's first two words are a
-  helper verb then a pronoun (`can you`, `is it`), or a question word then
-  a helper verb (`why is`, `how do`), and the output's last code point
-  after trimming trailing whitespace isn't `?`.
+  helper verb (`HELPER_VERBS`) then a pronoun (`PRONOUNS`: `can you`,
+  `is it`), or a question word (`QUESTION_WORDS`) then a helper verb
+  (`why is`, `how do`), and the output's last code point after trimming
+  trailing whitespace isn't `?`. When the helper verb is `do` or `have`, the
+  second word must be a person (`PERSONS`: `you`, `i`, `we`, `they`, `he`,
+  `she`), not just any pronoun: `do you…` is a question, `do it now` and
+  `have it run on CI` are commands.
 - `numbers`: `match_numbers(numbers in the transcript's non-ignored words,
   numbers in the output)` leaves anything unmatched on either side. So a
   corrected-away number in the output fails, as does a dropped or changed one.
