@@ -26,6 +26,12 @@ ID_PATTERN = re.compile(r"[a-z0-9][a-z0-9.-]*")
 ML_HINT = "the model tools need the ml dependency group: uv run --group ml irudd-voice ..."
 
 
+def valid_id(model_id: str) -> bool:
+    """A model id is a folder name: ID_PATTERN and no "..", the same rule as
+    the app's ModelManifest.isValidID (shared/manifest.schema.md)."""
+    return ID_PATTERN.fullmatch(model_id) is not None and ".." not in model_id
+
+
 @dataclass(frozen=True)
 class Candidate:
     id: str
@@ -135,8 +141,8 @@ def write_manifest(
     created_at: str | None = None,
 ) -> dict:
     """Hashes every file in the folder and writes manifest.json (schema 1)."""
-    if not ID_PATTERN.fullmatch(model_id):
-        raise ModelError(f"model id {model_id!r} must match {ID_PATTERN.pattern}")
+    if not valid_id(model_id):
+        raise ModelError(f"model id {model_id!r} must match {ID_PATTERN.pattern} without '..'")
     if (training is None) != (prompt_version is None):
         raise ModelError("a trained model needs a prompt_version and a base model must not have one")
     files = {name: sha256_file(folder / name) for name in model_files(folder)}

@@ -339,6 +339,8 @@ def corrected_spans(tokens: list[str]) -> tuple[set[int], set[int]]:
     """Finds spoken corrections. Returns (replaced word indexes, marker word
     indexes). A marker counts only when the next word restates something from
     the three words before it: the same word, or a number after a number.
+    The replaced words run from the earliest restated word up to the marker,
+    so "don't run five no six tests" replaces only "five" and keeps "don't".
     "fifteen seconds no fifty seconds" replaces "fifteen seconds"; "there is
     no cache" is not a correction."""
     replaced: set[int] = set()
@@ -348,15 +350,16 @@ def corrected_spans(tokens: list[str]) -> tuple[set[int], set[int]]:
             parts = marker.split()
             if tokens[index:index + len(parts)] != parts:
                 continue
-            before = tokens[max(0, index - 3):index]
+            first = max(0, index - 3)
+            before = tokens[first:index]
             after = tokens[index + len(parts):index + len(parts) + 4]
             if not before or not after:
                 continue
-            restated = any(w in before for w in after if w not in FUNCTION_WORDS) or (
-                _kind(after[0]) == "number" and any(_kind(w) == "number" for w in before)
-            )
+            restated = [i for i, w in enumerate(before) if w not in FUNCTION_WORDS and w in after]
+            if _kind(after[0]) == "number":
+                restated += [i for i, w in enumerate(before) if _kind(w) == "number"][:1]
             if restated:
-                replaced.update(range(max(0, index - 3), index))
+                replaced.update(range(first + min(restated), index))
                 markers.update(range(index, index + len(parts)))
     return replaced, markers
 

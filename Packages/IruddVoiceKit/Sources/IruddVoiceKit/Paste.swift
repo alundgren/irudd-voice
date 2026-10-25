@@ -166,6 +166,14 @@ public actor Paster {
         return await paste(text, into: target)
     }
 
+    /// The text as one line: each run of line breaks, with the spaces and
+    /// tabs around it, becomes one space. A pasted line break would press
+    /// Return in a chat box and send the message.
+    public static func oneLine(_ text: String) -> String {
+        text.replacing(/[ \t]*[\r\n\u{0B}\u{0C}\u{85}\u{2028}\u{2029}]+[ \t]*/.matchingSemantics(.unicodeScalar),
+                       with: " ")
+    }
+
     private func pasteNow(_ text: String, into target: PasteTarget,
                           shouldStop: @Sendable (PasteStage) async -> Bool) async -> PasteOutcome {
         /// Not pasting: stopped if Throw Away marked it, otherwise waiting.
@@ -192,7 +200,8 @@ public actor Paster {
         case .incomplete: return await notPasted(.clipboardIncomplete)
         }
 
-        let ours = clipboard.writeDictation(text)
+        // Every paste goes through here, so this is the one place line breaks go.
+        let ours = clipboard.writeDictation(Self.oneLine(text))
 
         // The last chance to stop. After this the thought is committed: a
         // failed focus check below makes it waiting text, which Throw Away

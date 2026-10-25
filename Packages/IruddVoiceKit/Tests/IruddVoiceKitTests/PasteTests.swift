@@ -123,6 +123,18 @@ struct PasteTests {
         #expect(!keyboard.posted.contains(36) && !keyboard.posted.contains(76))
     }
 
+    /// A line break in the clipboard text would press Return in a chat box:
+    /// every kind becomes one space, whatever path the paste came from.
+    @Test func pastedTextIsAlwaysOneLine() async {
+        let clipboard = FakeClipboard()
+        let paster = Paster(clipboard: clipboard, keyboard: FakeKeyboard(), focus: FakeFocus(editorBox),
+                            settings: settings())
+        _ = await paster.paste("Run the tests.\r\nThen deploy.\n\n Done", into: editorBox)
+        _ = await paster.pasteHere("one\rtwo\u{2028}three \u{2029}\tfour\u{85}five")
+        #expect(clipboard.writes == ["Run the tests. Then deploy. Done", "one two three four five"])
+        #expect(Paster.oneLine("no breaks,  two spaces") == "no breaks,  two spaces")
+    }
+
     @Test func usesTheLayoutsVKey() async {
         let keyboard = FakeKeyboard()
         keyboard.keyCode = 47 // where "v" is on Dvorak
@@ -346,8 +358,10 @@ final class Counter: @unchecked Sendable {
 }
 
 struct PasteAgainTests {
-    func row(_ id: Int64, status: String = "transcribed", raw: String? = "raw text") -> ChunkSummary {
-        ChunkSummary(id: id, status: status, error: nil, rawText: raw, durationMs: 1000, endReason: "muteButton",
+    func row(_ id: Int64, status: String = "transcribed", raw: String? = "raw text", pasted: String? = nil,
+             cleaned: String? = nil) -> ChunkSummary {
+        ChunkSummary(id: id, status: status, error: nil, rawText: raw, pastedText: pasted, cleanedText: cleaned,
+                     durationMs: 1000, endReason: "muteButton",
                      endedAt: Date(), audioFormat: "flac", audioSampleRate: 16_000, audioBytes: 100)
     }
 
@@ -364,6 +378,32 @@ struct PasteAgainTests {
     /// text, since nothing is in flight for it.
     @Test func rowFromBeforeThisRunPastesItsRawText() {
         #expect(PasteAgain().text(waiting: nil, newest: row(5))! == (5, "raw text"))
+    }
+
+    /// After a restart, a row that was pasted cleaned pastes the cleaned
+    /// text again; one held as waiting (nothing pasted yet) its cleaned text.
+    @Test func rowFromBeforeThisRunPastesWhatWasDelivered() {
+        let pasted = row(5, pasted: "Run the tests.", cleaned: "Run the tests.")
+        #expect(PasteAgain().text(waiting: nil, newest: pasted)! == (5, "Run the tests."))
+        let waiting = row(6, cleaned: "Deploy it.")
+        #expect(PasteAgain().text(waiting: nil, newest: waiting)! == (6, "Deploy it."))
+    }
+
+    /// Paste here picks the text, waits for the panel to close, then asks
+    /// again: thrown away (or replaced by a newer thought) during the wait
+    /// means nothing is pasted.
+    @Test func pasteHereRechecksAfterItsWait() {
+        var memory = PasteAgain()
+        memory.started(id: 3)
+        memory.delivered(id: 3, text: "Held.", outcome: .waiting(.targetMoved))
+        #expect(memory.recheck(id: 3, waiting: (3, "Held."), newest: row(3))! == (3, "Held."))
+        // A newer thought became the newest during the wait.
+        memory.started(id: 4)
+        memory.delivered(id: 4, text: "Newer.", outcome: .pasted)
+        #expect(memory.recheck(id: 3, waiting: nil, newest: row(4)) == nil)
+        // Thrown away during the wait.
+        memory.thrownAway(id: 4)
+        #expect(memory.recheck(id: 4, waiting: nil, newest: row(4)) == nil)
     }
 
     /// B is transcribed (the newest row) but still being cleaned: Paste last

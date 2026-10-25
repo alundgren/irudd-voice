@@ -30,6 +30,11 @@ the one with the fewest failures, and this file says so.
 The Python and Swift evals agree on pass counts. No candidate ever answered a
 question (no `answers` failures), and every reply could be read.
 
+The eval reports were scored with an earlier version of the hard checks (their
+`hardchecks_sha256` is older). Re-scoring their stored replies with the
+current checks, without running a model, gives the same failures for every
+item, so the counts above still hold.
+
 ## Decision
 
 **Default: `gemma-4-e2b-base-q4`** (google/gemma-4-E2B-it at revision

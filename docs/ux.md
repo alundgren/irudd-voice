@@ -152,7 +152,11 @@ up** meanwhile; a 50-word thought takes about 1.2 s.
   newest thought was thrown away, Paste last again pastes nothing, not an
   older thought. While the newest thought is still being transcribed,
   cleaned or pasted, Paste last again pastes nothing (waiting text aside)
-  until that thought is delivered, so its raw text never goes out early. Throw away acts on what
+  until that thought is delivered, so its raw text never goes out early.
+  After a restart it pastes the newest thought's pasted (cleaned) text,
+  and the raw text only when nothing cleaned was kept. Paste Here checks
+  again right before it pastes, so text thrown away while the panel
+  closes isn't pasted. Throw away acts on what
   the icon shows: while **Hearing you** it ends the thought, on **Cleaning
   up** it drops the newest thought still being cleaned (up to the moment
   it's pasted), and on **Text waiting** it drops the waiting text. Nothing
@@ -163,6 +167,8 @@ up** meanwhile; a 50-word thought takes about 1.2 s.
 - It never switches to another mic. If the pinned mic is unplugged, it
   shows Mic missing and waits.
 - It never presses Enter or submits anything. You review and send.
+  Pasted text is always one line: line breaks (and the spaces around them)
+  become one space, so a pasted line break can't send a chat message.
 - It never loses a thought. Audio is saved before recognition, cleanup or
   pasting can fail.
 - It never pastes the model's text when it failed a check. You get what you

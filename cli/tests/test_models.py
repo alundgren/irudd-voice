@@ -63,6 +63,15 @@ def test_trained_model_needs_prompt_version(tmp_path):
         models.write_manifest(folder, "Bad_Id", cand)
 
 
+def test_model_ids_match_the_app(tmp_path):
+    # The app's ModelManifest.isValidID refuses ".." too.
+    assert models.valid_id("qwen3.5-2b-ft-20261025-1")
+    for bad in ("a..b", "m..", "-m", ".m", "Bad_Id", ""):
+        assert not models.valid_id(bad)
+    with pytest.raises(models.ModelError, match="without '..'"):
+        models.write_manifest(fake_folder(tmp_path / "m"), "a..b", models.candidate("qwen3.5-2b"))
+
+
 @pytest.mark.parametrize("tamper, problem", [
     (lambda f: (f / "model.safetensors").write_bytes(b"\x01" * 64), "model.safetensors: checksum differs"),
     (lambda f: (f / "config.json").unlink(), "config.json: missing"),

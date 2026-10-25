@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "about": "Every hard-check implementation (Swift app, Python CLI) must give exactly these results, failures in the order dropped, answers, question, numbers, negation, identifiers, new_words. 'replies' test reading the model's raw reply (hit_limit = generation stopped at max_tokens); 'checks' test the checks.",
   "replies": [
     {
@@ -387,6 +387,38 @@
       "failures": [
         "negation"
       ]
+    },
+    {
+      "name": "a negation before a corrected number stays (dropped)",
+      "transcript": "Don't run five, no, six tests.",
+      "cleaned": "Run six tests.",
+      "vocabulary": [],
+      "failures": [
+        "negation"
+      ]
+    },
+    {
+      "name": "a negation before a corrected number stays (kept)",
+      "transcript": "Don't run five, no, six tests.",
+      "cleaned": "Don't run six tests.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "never before a corrected number stays (dropped)",
+      "transcript": "never retry three no four times",
+      "cleaned": "Retry four times.",
+      "vocabulary": [],
+      "failures": [
+        "negation"
+      ]
+    },
+    {
+      "name": "never before a corrected number stays (kept)",
+      "transcript": "never retry three no four times",
+      "cleaned": "Never retry four times.",
+      "vocabulary": [],
+      "failures": []
     },
     {
       "name": "no correction restating the word",

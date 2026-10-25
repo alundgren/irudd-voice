@@ -50,6 +50,10 @@ public struct ChunkSummary: Sendable, Equatable {
     public let status: String
     public let error: String?
     public let rawText: String?
+    /// What was pasted or copied (`pasted_text`).
+    public let pastedText: String?
+    /// The cleaned text, set only when it was used instead of the raw text.
+    public let cleanedText: String?
     public let durationMs: Int64
     public let endReason: String
     public let endedAt: Date
@@ -300,11 +304,11 @@ public actor ChunkStore {
     private func summaries(where clause: String, _ values: [SQLValue]) throws -> [ChunkSummary] {
         try db.query("""
             SELECT id, status, error, raw_text, duration_ms, end_reason, ended_at, audio_format,
-                audio_sample_rate, audio_bytes FROM chunks WHERE \(clause)
+                audio_sample_rate, audio_bytes, pasted_text, cleaned_text FROM chunks WHERE \(clause)
             """, values).map { row in
             ChunkSummary(
                 id: row[0].int ?? 0, status: row[1].text ?? "", error: row[2].text, rawText: row[3].text,
-                durationMs: row[4].int ?? 0, endReason: row[5].text ?? "",
+                pastedText: row[10].text, cleanedText: row[11].text, durationMs: row[4].int ?? 0, endReason: row[5].text ?? "",
                 endedAt: Timestamps.date(row[6].text ?? "") ?? .distantPast, audioFormat: row[7].text ?? "",
                 audioSampleRate: Int(row[8].int ?? 0), audioBytes: row[9].int ?? 0)
         }
