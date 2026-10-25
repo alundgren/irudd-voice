@@ -128,3 +128,14 @@ def test_dataset_examples_use_the_training_builder():
 def test_bf16_estimate_counts_embeddings_once():
     # qwen3.5-2b: 3.76 GB of text weights, 1.02 GB of them embeddings; measured peak 6.7 GB.
     assert train.bf16_training_bytes(376, 102) == 650
+
+
+def test_reply_loss_counts_only_reply_tokens():
+    mx = pytest.importorskip("mlx.core")
+    from mlx_lm.tuner.trainer import iterate_batches
+
+    # 5 prompt tokens, then 3 reply tokens; the batch is padded with zeros.
+    batch, lengths = next(iterate_batches([([11, 12, 13, 14, 15, 21, 22, 23], 5)], 1, 1024))
+    targets = batch[:, 1:]
+    mask = train.reply_mask(lengths, mx.arange(1, targets.shape[1] + 1))
+    assert [t for t, m in zip(targets[0].tolist(), mask[0].tolist()) if m] == [21, 22, 23]

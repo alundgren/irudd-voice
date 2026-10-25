@@ -172,6 +172,29 @@ def choose_base(cand: Candidate, models_dir: Path) -> tuple[Path, str]:
     return q4, "q4"
 
 
+def reply_mask(lengths, steps):
+    """Which targets count: from the first reply token through the last real
+    token. mlx-lm 0.32.2's default_loss uses `steps <= length`, which also
+    counts the padding token after the sequence (ID 0: Gemma's <pad>, which
+    its logit softcap can't fit, so its loss stalled near 0.8)."""
+    import mlx.core as mx
+
+    return mx.logical_and(steps >= lengths[:, 0:1], steps < lengths[:, 1:])
+
+
+def reply_loss(model, batch, lengths):
+    """Cross-entropy over the reply tokens only (see reply_mask)."""
+    import mlx.core as mx
+    import mlx.nn as nn
+
+    inputs, targets = batch[:, :-1], batch[:, 1:]
+    logits = model(inputs)
+    mask = reply_mask(lengths, mx.arange(1, targets.shape[1] + 1))
+    ce = nn.losses.cross_entropy(logits, targets) * mask
+    ntoks = mask.sum()
+    return ce.astype(mx.float32).sum() / ntoks, ntoks
+
+
 def train_lora(model, tokenizer, family: str, train_rows: list[dict], valid_rows: list[dict],
                adapter_dir: Path, settings: LoraSettings, log=print) -> dict:
     """Trains LoRA adapters in place on `model` with mlx-lm's trainer and
@@ -218,7 +241,7 @@ def train_lora(model, tokenizer, family: str, train_rows: list[dict], valid_rows
         max_seq_length=settings.max_seq_length, grad_checkpoint=settings.grad_checkpoint,
     )
     train(model=model, optimizer=optim.Adam(learning_rate=settings.learning_rate), train_dataset=train_set,
-          val_dataset=valid_set, args=args, training_callback=Record())
+          val_dataset=valid_set, args=args, loss=reply_loss, training_callback=Record())
     losses["peak_memory_gb"] = round(mx.get_peak_memory() / 1e9, 2)
     return losses
 

@@ -183,7 +183,13 @@ def snapshot(cand: Candidate) -> Path:
         from huggingface_hub import snapshot_download
     except ImportError as error:
         raise MissingML(error) from None
-    return Path(snapshot_download(cand.repo, revision=cand.revision, allow_patterns=SNAPSHOT_PATTERNS))
+    try:
+        # A pinned commit never changes, so a cached copy needs no network
+        # (without this, a DNS outage stalled `train` for most of an hour).
+        return Path(snapshot_download(cand.repo, revision=cand.revision, allow_patterns=SNAPSHOT_PATTERNS,
+                                      local_files_only=True))
+    except Exception:  # not cached yet (huggingface_hub raises several error types)
+        return Path(snapshot_download(cand.repo, revision=cand.revision, allow_patterns=SNAPSHOT_PATTERNS))
 
 
 def finish_folder(staging: Path, source: Path) -> None:
