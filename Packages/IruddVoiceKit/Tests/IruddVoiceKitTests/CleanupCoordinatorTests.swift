@@ -11,6 +11,8 @@ final class ScriptedHelper: CleanupHelper, @unchecked Sendable {
     private var _unloads = 0
     /// Model IDs whose folder the helper refuses.
     var refuse: Set<String> = []
+    /// How long a load takes.
+    var loadTime: Duration = .zero
     /// The reply to each clean request; the default echoes the transcript.
     var reply: @Sendable (CleanRequest) throws -> CleanResponse = { request in
         CleanResponse(reply: "{\"cleaned\": \(CleanupPrompt.jsonString(request.transcript))}")
@@ -31,6 +33,7 @@ final class ScriptedHelper: CleanupHelper, @unchecked Sendable {
 
     func load(_ request: LoadRequest, timeout: Duration) async throws -> LoadResponse {
         lock.withLock { _loads.append(request) }
+        if loadTime > .zero { try await Task.sleep(for: loadTime) }
         let id = request.modelID ?? ""
         if refuse.contains(id) {
             loaded = nil
@@ -59,6 +62,14 @@ func repoPrompt() throws -> CleanupPrompt {
     try CleanupPrompt.load(from: sharedFolder.appendingPathComponent("cleanup-prompt.json"))
 }
 
+/// A clock tests move by hand.
+final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date = Date(timeIntervalSince1970: 1_800_000_000)
+    var now: Date { lock.withLock { date } }
+    func advance(_ seconds: TimeInterval) { lock.withLock { date += seconds } }
+}
+
 /// A temp database, a models folder with manifests for `models`, and a
 /// coordinator over a scripted helper.
 struct CleanupFixture {
@@ -68,7 +79,8 @@ struct CleanupFixture {
     let modelsFolder: URL
     let coordinator: CleanupCoordinator
 
-    init(models: [String] = [CleanupDefaults.modelID], prompt: CleanupPrompt? = nil) throws {
+    init(models: [String] = [CleanupDefaults.modelID], prompt: CleanupPrompt? = nil,
+         clock: TestClock? = nil) throws {
         path = temporaryDatabasePath()
         store = try ChunkStore(path: path)
         modelsFolder = URL(fileURLWithPath: (path as NSString).deletingLastPathComponent).appendingPathComponent("models")
@@ -79,7 +91,8 @@ struct CleanupFixture {
         }
         coordinator = CleanupCoordinator(
             helper: helper, store: store, prompt: try prompt ?? repoPrompt(), modelsFolder: modelsFolder,
-            vocabularyFile: modelsFolder.appendingPathComponent("vocabulary.json"))
+            vocabularyFile: modelsFolder.appendingPathComponent("vocabulary.json"),
+            now: { @Sendable in clock?.now ?? Date() })
     }
 
     /// Another connection to the same file, for what the CLI would write.
@@ -284,6 +297,49 @@ struct CleanupCoordinatorTests {
         #expect(try await fixture.state("cleanup.status") == "loaded")
         await fixture.coordinator.idleCheck(busy: false)
         #expect(fixture.helper.unloads == 1)
+    }
+
+    @Test func heartbeatOnEveryCheckAtMostEveryFiveSeconds() async throws {
+        let clock = TestClock()
+        let fixture = try CleanupFixture(clock: clock)
+        await fixture.coordinator.idleCheck(busy: false)
+        let first = try #require(try await fixture.state("cleanup.checked_at"))
+        #expect(first == Timestamps.string(clock.now))
+
+        // Within 5 s: no write.
+        clock.advance(4)
+        await fixture.coordinator.idleCheck(busy: false)
+        #expect(try await fixture.state("cleanup.checked_at") == first)
+
+        // A check during a thought still writes it; status_at stays.
+        let statusAt = try await fixture.state("cleanup.status_at")
+        clock.advance(6)
+        await fixture.coordinator.idleCheck(busy: true)
+        #expect(try await fixture.state("cleanup.checked_at") == Timestamps.string(clock.now))
+        #expect(try await fixture.state("cleanup.status_at") == statusAt)
+
+        // And during the training lease.
+        try await fixture.store.setAppState(CleanupCoordinator.Keys.unloadUntil,
+                                            Timestamps.string(clock.now.addingTimeInterval(120)))
+        clock.advance(10)
+        await fixture.coordinator.idleCheck(busy: false)
+        clock.advance(10)
+        await fixture.coordinator.idleCheck(busy: false)
+        #expect(try await fixture.state("cleanup.checked_at") == Timestamps.string(clock.now))
+    }
+
+    @Test func heartbeatWhileAnotherCheckIsLoading() async throws {
+        let clock = TestClock()
+        let fixture = try CleanupFixture(clock: clock)
+        fixture.helper.loadTime = .milliseconds(500)
+        let loading = Task { await fixture.coordinator.idleCheck(busy: false) }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(try await fixture.state("cleanup.status") == "loading")
+        clock.advance(10)
+        await fixture.coordinator.idleCheck(busy: false)
+        #expect(try await fixture.state("cleanup.checked_at") == Timestamps.string(clock.now))
+        await loading.value
+        #expect(try await fixture.state("cleanup.status") == "loaded")
     }
 
     @Test func switchesToTheActiveModelOnlyWhenIdle() async throws {

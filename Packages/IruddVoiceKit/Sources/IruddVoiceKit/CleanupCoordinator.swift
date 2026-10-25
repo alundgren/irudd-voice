@@ -3,10 +3,11 @@ import Foundation
 /// The app's side of the cleanup model: which model the helper has, the
 /// training lease, and the status keys the CLI reads (shared/app-state.md).
 ///
-/// - `idleCheck` runs when the app is idle (at most every 10 s, and after
-///   each thought). It follows the lease, checks the helper still has the
-///   model, and loads the active model (or the default) when it differs.
-///   It never loads or unloads while a thought is in progress.
+/// - `idleCheck` runs every 10 s while the app runs, and after each
+///   thought. It writes the `cleanup.checked_at` heartbeat, follows the
+///   lease, checks the helper still has the model, and loads the active
+///   model (or the default) when it differs. It never loads or unloads
+///   while a thought is in progress.
 /// - `clean` cleans one thought, or returns the raw text and why.
 public actor CleanupCoordinator {
     /// `cleanup.status` values (shared/app-state.md).
@@ -43,7 +44,11 @@ public actor CleanupCoordinator {
         public static let loadedModel = "cleanup.loaded_model"
         public static let status = "cleanup.status"
         public static let statusAt = "cleanup.status_at"
+        public static let checkedAt = "cleanup.checked_at"
     }
+
+    /// `cleanup.checked_at` is written at most this often (seconds).
+    public static let heartbeatInterval: TimeInterval = 5
 
     private let helper: any CleanupHelper
     private let store: ChunkStore
@@ -70,6 +75,7 @@ public actor CleanupCoordinator {
     private var thoughtsCleaning = 0
     private var checking = false
     private var written: (status: String?, loaded: String?) = (nil, nil)
+    private var lastHeartbeat: Date?
 
     public init(helper: any CleanupHelper, store: ChunkStore, prompt: CleanupPrompt,
                 modelsFolder: URL = ModelPaths.modelsFolder, vocabularyFile: URL = ModelPaths.vocabularyFile,
@@ -95,6 +101,9 @@ public actor CleanupCoordinator {
     /// a thought is being heard or transcribed, so nothing is loaded or
     /// unloaded now (the check after that thought does it).
     public func idleCheck(busy: Bool) async {
+        // Every check is a heartbeat, even one that finds a thought in
+        // progress or another check still loading a model.
+        await heartbeat()
         guard !checking else { return }
         checking = true
         defer { checking = false }
@@ -263,6 +272,20 @@ public actor CleanupCoordinator {
         guard new != state else { return }
         state = new
         stateSince = now()
+    }
+
+    /// Writes `cleanup.checked_at`, which tells the CLI the app is running
+    /// (`status_at` only changes with the status). At most every
+    /// `heartbeatInterval`, so the 10 s checks touch the database once each.
+    private func heartbeat() async {
+        let at = now()
+        if let last = lastHeartbeat, at >= last, at.timeIntervalSince(last) < Self.heartbeatInterval { return }
+        lastHeartbeat = at
+        do {
+            try await store.setAppState(Keys.checkedAt, Timestamps.string(at), at: at)
+        } catch {
+            lastHeartbeat = nil
+        }
     }
 
     /// Writes `cleanup.status`, `cleanup.status_at` (only when the status

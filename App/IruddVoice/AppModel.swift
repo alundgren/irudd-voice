@@ -176,10 +176,12 @@ final class AppModel {
             await checkSpeechFiles()
         }
         // Load the cleanup model, then check the lease and the active model
-        // every 10 s (shared/app-state.md).
+        // and write the heartbeat every 10 s (shared/app-state.md). Each
+        // check runs on its own, so a slow model load doesn't hold up the
+        // heartbeat of the next one.
         Task {
             while true {
-                await cleanupIdleCheck()
+                Task { await cleanupIdleCheck() }
                 try? await Task.sleep(for: .seconds(10))
             }
         }
