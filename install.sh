@@ -138,7 +138,7 @@ build() {
     -configuration Release \
     -destination "platform=macOS,arch=arm64" \
     -derivedDataPath "$BUILD_DIR/DerivedData" \
-    CODE_SIGN_IDENTITY="$sha1" \
+    CODE_SIGNING_ALLOWED=NO \
     build >"$build_log" 2>&1; then
     grep -E 'error:' "$build_log" | head -n 20 >&2 || true
     stop "The build failed. The full log is in $build_log."
@@ -146,11 +146,28 @@ build() {
   built="$BUILD_DIR/DerivedData/Build/Products/Release/$APP_NAME"
   [[ -d "$built" ]] || stop "The build finished but $built is missing. See $build_log."
 
-  codesign --verify --strict "$built" 2>/dev/null || stop "The built app's signature doesn't verify."
-  local requirement
-  requirement=$(codesign -d -r- "$built" 2>&1 || true)
-  grep -qi "$sha1" <<<"$requirement" ||
-    stop "The built app isn't signed with certificate $sha1."
+  # Xcode would also sign the Swift packages' resource bundles (mlx-swift,
+  # swift-transformers, swift-crypto) and refuses to do that with a
+  # self-signed certificate. So the build is unsigned, and the code is signed
+  # here, inside out: the cleanup helper first, then the app around it. The
+  # resource bundles hold no code and are sealed by the helper's signature.
+  local helper
+  for helper in "$built"/Contents/XPCServices/*.xpc; do
+    [[ -e "$helper" ]] || continue
+    codesign --force --sign "$sha1" --timestamp=none "$helper" >>"$build_log" 2>&1 ||
+      stop "Couldn't sign $(basename "$helper"). See $build_log."
+  done
+  codesign --force --sign "$sha1" --timestamp=none "$built" >>"$build_log" 2>&1 ||
+    stop "Couldn't sign the app. See $build_log."
+
+  codesign --verify --strict --deep "$built" 2>/dev/null || stop "The built app's signature doesn't verify."
+  local requirement code
+  for code in "$built" "$built"/Contents/XPCServices/*.xpc; do
+    [[ -e "$code" ]] || continue
+    requirement=$(codesign -d -r- "$code" 2>&1 || true)
+    grep -qi "$sha1" <<<"$requirement" ||
+      stop "$(basename "$code") isn't signed with certificate $sha1."
+  done
 }
 
 # What was built: written next to a staged app and to install.json, so the

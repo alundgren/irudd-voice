@@ -39,9 +39,10 @@ case "$1" in
     touch "$FAKE_STATE/metal-downloaded" ;;
   *)
     [[ "${FAKE_BUILD:-ok}" == ok ]] || { echo "main.swift:1: error: boom"; exit 65; }
+    printf '%s\n' "$@" >"$FAKE_STATE/build-args"
     while (( $# )); do [[ "$1" == -derivedDataPath ]] && dd=$2; shift; done
     app="$dd/Build/Products/Release/irudd-voice.app"
-    mkdir -p "$app/Contents/MacOS"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/XPCServices/IruddVoiceCleanup.xpc/Contents/MacOS"
     echo "${FAKE_BUILD_ID:-new}" >"$app/Contents/MacOS/irudd-voice" ;;
 esac
 EOF2
@@ -62,6 +63,11 @@ EOF2
 fake codesign <<'EOF2'
 #!/bin/bash
 [[ "$1" == --verify ]] && exit 0
+if [[ "$1" == --force ]]; then
+  [[ "${FAKE_SIGN:-ok}" == ok ]] || { echo "errSecInternalComponent"; exit 1; }
+  echo "${*: -1}" >>"$FAKE_STATE/signed"
+  exit 0
+fi
 echo "designated => identifier \"io.github.alundgren.irudd-voice\" and certificate root = H\"${FAKE_SIGNED_SHA1:-$FAKE_SHA1}\""
 EOF2
 fake pgrep <<'EOF2'
@@ -134,6 +140,7 @@ run duplicate-identity 1 "More than one signing certificate" FAKE_IDENTITY=dupli
 run locked-keychain 1 "login keychain is locked" FAKE_KEYCHAIN=locked
 run build-fails 1 "The build failed" FAKE_BUILD=fail
 run wrong-signer 1 "isn't signed with certificate" FAKE_SIGNED_SHA1=3333333333333333333333333333333333333333
+run sign-fails 1 "Couldn't sign IruddVoiceCleanup.xpc" FAKE_SIGN=fail
 
 run metal-download 0 "Metal toolchain: installed" FAKE_METAL=downloadable -- --no-open
 grep -q new "$last_apps/irudd-voice.app/Contents/MacOS/irudd-voice" || fail "app not replaced"
@@ -147,6 +154,13 @@ install_json="$work/install/state-dir/install.json"
 plutil -convert json -o /dev/null "$install_json" 2>/dev/null || fail "install.json isn't valid JSON"
 grep -q "\"signingSHA1\": \"$SHA1\"" "$install_json" || fail "install.json is missing the certificate"
 grep -q "\"commit\": \"[0-9a-f]\{40\}\"" "$install_json" || fail "install.json is missing the commit"
+# Xcode can't sign the packages' resource bundles with a self-signed
+# certificate, so the build is unsigned and install.sh signs the helper, then
+# the app.
+grep -qx "CODE_SIGNING_ALLOWED=NO" "$last_state/build-args" || fail "the build wasn't unsigned"
+! grep -q "^CODE_SIGN_IDENTITY=" "$last_state/build-args" || fail "the build was given a signing identity"
+[[ "$(sed 's|.*/||' "$last_state/signed" | tr '\n' ' ')" == "IruddVoiceCleanup.xpc irudd-voice.app " ]] ||
+  fail "expected the helper, then the app, to be signed; got: $(tr '\n' ' ' <"$last_state/signed")"
 
 # ---- Update now: build into a staging folder, then swap -------------------
 
