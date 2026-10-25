@@ -209,8 +209,12 @@ The checks:
 - `question`: after leading fillers, the transcript's first two words are a
   helper verb (`HELPER_VERBS`) then a pronoun (`PRONOUNS`: `can you`,
   `is it`), or a question word (`QUESTION_WORDS`) then a helper verb
-  (`why is`, `how do`), and the output's last code point after trimming
-  trailing whitespace isn't `?`. When the helper verb is `do` or `have`, the
+  (`why is`, `how do`), and the output's first sentence doesn't end with
+  `?`. After trimming trailing whitespace, the first sentence ends at the
+  first `.`, `!` or `?` code point followed by whitespace or the end of the
+  text; with none, the check fails. So `What was wrong? The build…` passes,
+  and the dots in `install.sh` and `3.5` don't end a sentence. When the
+  helper verb is `do` or `have`, the
   second word must be a person (`PERSONS`: `you`, `i`, `we`, `they`, `he`,
   `she`), not just any pronoun: `do you…` is a question, `do it now` and
   `have it run on CI` are commands.

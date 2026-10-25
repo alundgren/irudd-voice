@@ -140,6 +140,17 @@ public enum HardChecks {
         return String(String.UnicodeScalarView(scalars))
     }
 
+    /// The mark that ends the first sentence: the first `.`, `!` or `?`
+    /// followed by whitespace or the end of the text. A dot inside a name
+    /// (`install.sh`) or a number (`3.5`) doesn't end a sentence.
+    static func firstSentenceEnd(_ text: String) -> Unicode.Scalar? {
+        let scalars = Array(rstrip(text).unicodeScalars)
+        for (i, scalar) in scalars.enumerated() where ".!?".unicodeScalars.contains(scalar) {
+            if i + 1 == scalars.count || isPythonWhitespace(scalars[i + 1]) { return scalar }
+        }
+        return nil
+    }
+
     /// Python's `\s` (the same characters as `str.isspace()`); ICU's `\s` differs.
     static let pythonSpaceClass = "[" + pythonWhitespace.sorted().map { String(format: "\\x{%X}", $0) }.joined() + "]"
     static let fence = Pattern(#"\A```(?:json)?"# + pythonSpaceClass + "*(.*?)" + pythonSpaceClass + "*```\\z", dotAll: true)
@@ -450,7 +461,7 @@ public enum HardChecks {
                 && (head[0] == "do" || head[0] == "have" ? persons : pronouns).contains(head[1]))
             || (questionWords.contains(head[0]) && helperVerbs.contains(head[1]))
         )
-        if asks && !out.isEmpty && rstrip(cleaned).unicodeScalars.last != "?" {
+        if asks && !out.isEmpty && firstSentenceEnd(cleaned) != "?" {
             failures.insert("question")
         }
 
