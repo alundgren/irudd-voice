@@ -64,8 +64,11 @@ its own token and for Swift's token at that step. The project owner accepted
 the tie-aware rule on 2026-10-25, with one addition: at each difference,
 Swift's token must be among Python's top 3 choices (top 3 rather than second,
 because qwen3.5-2b p08 is a three-way near-tie: " dot" 18.5, " Python" 18.5,
-" for" 18.375). `tests/model-parity.sh` passes a model when its tokens are
-identical or this rule holds.
+" for" 18.375). Python's own token must also be the top score when its
+reference is replayed, and both runs must share the model folder, inputs,
+token limit and stop tokens. `tests/model-parity.sh` passes a model when its
+tokens are identical or this rule holds; without a Python with mlx-lm to check
+the rule, any difference fails.
 
 | Model | Prompt tokens identical | Strict: generated tokens identical | Tie-aware |
 | --- | --- | --- | --- |
