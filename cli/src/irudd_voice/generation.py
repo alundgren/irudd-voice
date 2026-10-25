@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+from importlib.metadata import PackageNotFoundError, version
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,6 +99,15 @@ def stop_token_ids(tokenizer) -> set[int]:
     vocab = tokenizer.get_vocab()
     ids.update(vocab[t] for t in (*END_OF_TURN_TOKENS, *EXTRA_STOP_TOKENS) if t in vocab)
     return ids
+
+
+def package_version(name: str) -> str | None:
+    """The installed version of a package, or None when it isn't installed
+    (mlx and mlx-lm are only there with the ml dependency group)."""
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return None
 
 
 def contract_hashes() -> dict:

@@ -93,8 +93,9 @@ def chat_template_sha256(folder: Path) -> str | None:
 
 def model_files(folder: Path) -> list[str]:
     """The folder's files that belong to the model, as relative paths: every
-    file except manifest.json and anything whose name, or a folder above it,
-    starts with "." (.DS_Store, editor and sync leftovers)."""
+    file except manifest.json and hidden files. Hidden means the file name or
+    the name of any folder on its path starts with "." (.DS_Store, .cache/…),
+    the same rule as the Swift side."""
     return sorted(
         rel.as_posix()
         for rel in (p.relative_to(folder) for p in folder.rglob("*") if p.is_file())

@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from importlib.metadata import version
 from pathlib import Path
 
-from .generation import Model, contract_hashes, read_jsonl
+from .generation import Model, contract_hashes, package_version, read_jsonl
 
 FORMAT = 1
 MAX_NEW_TOKENS = 96
@@ -48,8 +47,8 @@ def reference(folder: Path, inputs: Path = DEFAULT_INPUTS, max_new_tokens: int =
         "chat_template_options": model.prompt["chat_template_options"],
         "max_new_tokens": max_new_tokens,
         "stop_token_ids": sorted(model.stop_ids),
-        "mlx_version": version("mlx"),
-        "mlx_lm_version": version("mlx-lm"),
+        "mlx_version": package_version("mlx"),
+        "mlx_lm_version": package_version("mlx-lm"),
         "items": items,
     }
 

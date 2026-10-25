@@ -85,6 +85,11 @@ def test_contract_hashes_cover_the_prompt_and_checks():
     assert generation.hardware()
 
 
+def test_package_version_of_a_missing_package_is_none():
+    assert generation.package_version("irudd-voice-no-such-package") is None
+    assert generation.package_version("pytest")
+
+
 class FakeModel:
     def __init__(self, folder):
         self.manifest = json.loads((folder / "manifest.json").read_text())

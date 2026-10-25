@@ -137,9 +137,7 @@ def run(generate: Generator, sets: list[str], prompt: dict | None = None, log=pr
 
 
 def evaluate_folder(folder: Path, sets: list[str], log=print) -> dict:
-    from importlib.metadata import version
-
-    from .generation import Model, contract_hashes, hardware
+    from .generation import Model, contract_hashes, hardware, package_version
 
     model = Model(folder)
     model.clean("warm up")  # the first call compiles kernels; keep it out of the timings
@@ -154,8 +152,8 @@ def evaluate_folder(folder: Path, sets: list[str], log=print) -> dict:
         "manifest_sha256": hashlib.sha256((folder / "manifest.json").read_bytes()).hexdigest(),
         **contract_hashes(),
         "hardware": hardware(),
-        "mlx_version": version("mlx"),
-        "mlx_lm_version": version("mlx-lm"),
+        "mlx_version": package_version("mlx"),
+        "mlx_lm_version": package_version("mlx-lm"),
         "created_at": utc_now(),
         **report,
     }

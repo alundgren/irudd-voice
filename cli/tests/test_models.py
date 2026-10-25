@@ -201,3 +201,48 @@ def test_dotfiles_are_not_part_of_a_model(tmp_path):
     # A real file still counts.
     (folder / "extra.bin").write_bytes(b"x")
     assert models.verify(folder) == ["extra.bin: not in the manifest"]
+
+
+@pytest.fixture
+def fake_tiny_run(tmp_path, monkeypatch):
+    """train --tiny without MLX: train_tiny returns a finished tiny folder."""
+    from irudd_voice import train as train_module
+
+    cand = models.candidate("qwen3.5-2b")
+    folder = fake_folder(tmp_path / "qwen3.5-2b-tiny-20261025")
+    manifest = models.write_manifest(folder, folder.name, cand, prompt_version="cleanup-v1",
+                                     training={"method": "lora", "dataset_hash": "abc", "chunks": 36})
+    monkeypatch.setattr(train_module, "train_tiny",
+                        lambda *args, **kwargs: train_module.TrainResult(folder, manifest, {"train_seconds": 1}))
+    return folder
+
+
+def test_tiny_models_stay_out_of_the_apps_database(fake_tiny_run, app_db, monkeypatch, capsys):
+    from irudd_voice import db
+
+    monkeypatch.setattr(db, "DEFAULT_PATH", app_db)
+    assert cli.main(["train", "--tiny", "qwen3.5-2b"]) == 0
+    assert model_rows(app_db) == []
+    assert "test model, so it isn't recorded" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("position", ["after", "before"])
+def test_tiny_models_record_into_an_explicit_db(fake_tiny_run, app_db, position):
+    args = ["train", "--tiny", "qwen3.5-2b"]
+    args = [*args, "--db", str(app_db)] if position == "after" else ["--db", str(app_db), *args]
+    assert cli.main(args) == 0
+    assert model_rows(app_db) == [(fake_tiny_run.name,)]
+
+
+def test_prepare_records_with_db_before_the_command(tmp_path, app_db):
+    folder, _ = prepared(tmp_path / "models")
+    assert cli.main(["--db", str(app_db), "models", "prepare", "qwen3.5-2b", "--models-dir", str(tmp_path / "models")]) == 0
+    assert model_rows(app_db) == [(folder.name,)]
+
+
+def test_stats_still_defaults_to_the_apps_database(app_db, monkeypatch, capsys):
+    from irudd_voice import db
+
+    monkeypatch.setattr(db, "DEFAULT_PATH", app_db)
+    assert cli.main(["stats", "--json"]) == 0
+    assert '"thoughts": 0' in capsys.readouterr().out

@@ -21,11 +21,10 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import date
-from importlib.metadata import version
 from pathlib import Path
 
 from . import prompt as cleanup_prompt
-from .generation import END_OF_TURN_TOKENS, read_jsonl
+from .generation import END_OF_TURN_TOKENS, package_version, read_jsonl
 from .models import (
     DEFAULT_MODELS_DIR,
     QUANTIZATION,
@@ -312,7 +311,7 @@ def train(
                 "chunks": chunks if chunks is not None else len(train_rows),
                 "layers": settings.layers,
                 "iterations": settings.iterations,
-                "mlx_lm_version": version("mlx-lm"),
+                "mlx_lm_version": package_version("mlx-lm"),
                 "trained_at": utc_now(),
                 "base_weights": base_weights,
                 "lora": {"rank": settings.rank, "scale": settings.scale, "learning_rate": settings.learning_rate,

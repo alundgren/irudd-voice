@@ -30,18 +30,25 @@ def reports_errors(run):
     return wrapper
 
 
+def explicit_db(args) -> Path | None:
+    """The database given with --db (before or after the command), or None."""
+    return getattr(args, "db", None)
+
+
 def record(args, manifest: dict) -> None:
     """Adds the folder to the `models` table (shared/manifest.schema.md: every
     folder has a row). Without --db that's the app's database, if the app has
     created it; a --db that doesn't exist is an error."""
     from . import models
 
-    path = getattr(args, "db", None) or db.DEFAULT_PATH
-    if not Path(path).exists() and Path(path) == db.DEFAULT_PATH:
-        print(f"No database at {path} yet, so {manifest['id']} isn't recorded. After the app has run once: "
-              f"irudd-voice models register <folder>", file=sys.stderr)
-        return
-    models.record(Path(path), manifest)
+    path = explicit_db(args)
+    if path is None:
+        path = db.DEFAULT_PATH
+        if not path.exists():
+            print(f"No database at {path} yet, so {manifest['id']} isn't recorded. After the app has run once: "
+                  f"irudd-voice models register <folder>", file=sys.stderr)
+            return
+    models.record(path, manifest)
     print(f"recorded {manifest['id']} in {path}", file=sys.stderr)
 
 
@@ -90,7 +97,14 @@ def train_command(args) -> int:
         # with the unload lease in the trainloop step.
         raise ModelError("only `train --tiny <candidate>` exists so far")
     result = train.train_tiny(cand, args.models_dir, log=log)
-    record(args, result.manifest)
+    # A tiny model is a synthetic test of the training round trip with a real
+    # prompt_version: in the app's database it would look like a trained model
+    # to Settings → Model and promote. Record it only into an explicit --db.
+    if explicit_db(args) is not None:
+        record(args, result.manifest)
+    else:
+        print(f"{result.manifest['id']} is a test model, so it isn't recorded in the app's database "
+              "(pass --db to record it in another one)", file=sys.stderr)
     print(json.dumps({"folder": str(result.folder), "timings": result.timings,
                       "training": result.manifest["training"]}, indent=2))
     return 0
@@ -151,7 +165,9 @@ def register(commands) -> None:
     train.add_argument("--tiny", action="store_true", help="40 synthetic examples, to check the training round trip")
     train.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR,
                        help="where model folders go (default: the app's)")
-    train.add_argument("--db", type=Path, default=argparse.SUPPRESS, help=DB_HELP)
+    train.add_argument("--db", type=Path, default=argparse.SUPPRESS,
+                       help="database to record the tiny model in (default: none; test models stay out of the "
+                            "app's database)")
     train.set_defaults(run=train_command)
 
     evaluate = commands.add_parser("eval", help="run a model over the fixed eval sets (needs --group ml)")

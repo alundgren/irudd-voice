@@ -33,10 +33,11 @@ uv run --group ml irudd-voice parity-reference <model-folder> --out tokens.json
   (shared/manifest.schema.md). An existing folder is reused if it verifies
   and was built from the same pinned snapshot. Candidates: `qwen3.5-2b`,
   `gemma-4-e2b`, `qwen3.5-4b`.
-- `models prepare` and `train` record the folder in the `models` table of
-  the app's database (if the app has created it; otherwise they say so and
-  skip it). `--db PATH` uses another database. `models register <folder>`
-  verifies a folder and records it.
+- `models prepare` records the folder in the `models` table of the app's
+  database (if the app has created it; otherwise it says so and skips it).
+  `--db PATH` uses another database. `models register <folder>` verifies a
+  folder and records it. `train --tiny` records its test model only when
+  `--db` is given, so it never shows up as a trained model in the app.
 - `train --tiny` trains LoRA on the bf16 weights (the 4-bit folder if bf16
   wouldn't fit in 60% of memory: text weights plus the non-embedding weights
   again), fuses, quantizes and writes

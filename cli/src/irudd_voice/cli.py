@@ -89,7 +89,9 @@ def print_stats(s: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="irudd-voice", description=__doc__)
-    parser.add_argument("--db", type=Path, default=db.DEFAULT_PATH, help="database file (default: the app's)")
+    # None when not given, so commands can tell an explicit --db from the
+    # default (train --tiny only records into an explicit one).
+    parser.add_argument("--db", type=Path, default=None, help="database file (default: the app's)")
     commands = parser.add_subparsers(dest="command", required=True)
     stats_parser = commands.add_parser("stats", help="what's been recorded so far")
     stats_parser.add_argument("--json", action="store_true", help="print JSON")
@@ -102,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(args, "run"):
         return args.run(args)
 
+    args.db = args.db or db.DEFAULT_PATH
     try:
         con = db.connect(args.db)
     except db.SchemaError as error:
