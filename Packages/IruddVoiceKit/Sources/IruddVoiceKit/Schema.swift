@@ -46,8 +46,7 @@ public enum Schema {
             let folder = ((db.path as NSString).deletingLastPathComponent as NSString).appendingPathComponent("backups")
             let size = Self.sizeOnDisk(db.path)
             let needed = size * 2 + 50_000_000
-            if let free = freeSpace(folder.isEmpty ? db.path : (db.path as NSString).deletingLastPathComponent),
-               free < needed {
+            if let free = freeSpace((db.path as NSString).deletingLastPathComponent), free < needed {
                 throw DatabaseError(message: """
                     Updating the database needs \(needed / 1_000_000) MB free for a backup first, but only \
                     \(free / 1_000_000) MB is free. Nothing was changed. Free up some space and start the app again.
