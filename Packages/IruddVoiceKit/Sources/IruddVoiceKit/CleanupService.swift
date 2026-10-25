@@ -33,15 +33,23 @@ public struct CleanupStatus: Codable, Equatable, Sendable {
     public var error: String?
     /// The helper process's resident memory, in bytes.
     public var residentBytes: UInt64?
+    /// Ready with a drafter: cleanups use speculative decoding.
+    public var drafting: Bool?
+    /// Why the model's drafter isn't in use (it didn't load); the model
+    /// then runs one token at a time.
+    public var drafterProblem: String?
 
     public init(state: State, modelID: String? = nil, modelFolder: String? = nil, promptVersion: String? = nil,
-                error: String? = nil, residentBytes: UInt64? = nil) {
+                error: String? = nil, residentBytes: UInt64? = nil, drafting: Bool? = nil,
+                drafterProblem: String? = nil) {
         self.state = state
         self.modelID = modelID
         self.modelFolder = modelFolder
         self.promptVersion = promptVersion
         self.error = error
         self.residentBytes = residentBytes
+        self.drafting = drafting
+        self.drafterProblem = drafterProblem
     }
 }
 
@@ -102,9 +110,16 @@ public struct CleanResponse: Codable, Equatable, Sendable {
     public var promptSeconds: Double
     public var generateSeconds: Double
     public var error: String?
+    /// With a drafter: tokens it proposed and how many the model kept.
+    public var draftedTokens: Int?
+    public var acceptedTokens: Int?
+    /// Why this cleanup didn't draft though the model has a drafter (it
+    /// couldn't start, or stopped part-way). The reply is still the model's.
+    public var drafterProblem: String?
 
     public init(reply: String?, hitLimit: Bool = false, timedOut: Bool = false, promptTokens: Int = 0,
-                generatedTokens: Int = 0, promptSeconds: Double = 0, generateSeconds: Double = 0, error: String? = nil) {
+                generatedTokens: Int = 0, promptSeconds: Double = 0, generateSeconds: Double = 0, error: String? = nil,
+                draftedTokens: Int? = nil, acceptedTokens: Int? = nil, drafterProblem: String? = nil) {
         self.reply = reply
         self.hitLimit = hitLimit
         self.timedOut = timedOut
@@ -113,6 +128,9 @@ public struct CleanResponse: Codable, Equatable, Sendable {
         self.promptSeconds = promptSeconds
         self.generateSeconds = generateSeconds
         self.error = error
+        self.draftedTokens = draftedTokens
+        self.acceptedTokens = acceptedTokens
+        self.drafterProblem = drafterProblem
     }
 }
 

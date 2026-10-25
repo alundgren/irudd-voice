@@ -9,6 +9,9 @@ actor FakeBackend: CleanupBackend {
     var sequence = LoadSequence()
     var loaded: String?
     var loadTime: [String: Duration] = [:]
+    /// Like a CleanupEngine whose drafter loaded, or didn't (the reason).
+    var drafting = false
+    var drafterProblem: String?
     let tokenTime: Duration
     let tokensPerReply: Int
 
@@ -21,6 +24,11 @@ actor FakeBackend: CleanupBackend {
         loadTime[id] = time
     }
 
+    func setDrafter(drafting: Bool, problem: String?) {
+        self.drafting = drafting
+        drafterProblem = problem
+    }
+
     func load(folder: URL, expectedID: String?, verify: Bool, order: UInt64) async throws -> LoadedModel {
         guard sequence.start(order) else { throw CleanupBackendError.superseded }
         loaded = nil
@@ -28,7 +36,7 @@ actor FakeBackend: CleanupBackend {
         try await Task.sleep(for: loadTime[id] ?? .milliseconds(10))
         guard sequence.isCurrent(order) else { throw CleanupBackendError.superseded }
         loaded = id
-        return LoadedModel(id: id, seconds: 0.01)
+        return LoadedModel(id: id, seconds: 0.01, drafting: drafting, drafterProblem: drafterProblem)
     }
 
     func unload(order: UInt64) async {
@@ -70,6 +78,22 @@ final class HandlerHost: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
 }
 
 struct CleanupHandlerTests {
+    @Test func statusSaysWhetherTheModelDrafts() async throws {
+        let backend = FakeBackend()
+        let host = try HandlerHost(backend: backend)
+        let client = CleanupClient(endpoint: host.listener.endpoint)
+        await backend.setDrafter(drafting: true, problem: nil)
+        let drafting = try await client.load(LoadRequest(modelID: "m"))
+        #expect(drafting.status.state == .ready && drafting.status.drafting == true)
+        #expect(drafting.status.drafterProblem == nil)
+
+        // The drafter didn't load: still ready, with the reason.
+        await backend.setDrafter(drafting: false, problem: "the drafter didn't load: Invalid JSON")
+        let plain = try await client.load(LoadRequest(modelID: "m"))
+        #expect(plain.status.state == .ready && plain.status.drafting == false && plain.error == nil)
+        #expect(try await client.status().drafterProblem == "the drafter didn't load: Invalid JSON")
+    }
+
     @Test func aLateCleanupStopsAtItsDeadlineAndDoesntBlockTheNext() async throws {
         // 100 tokens × 50 ms = 5 s if nothing stopped it.
         let backend = FakeBackend()

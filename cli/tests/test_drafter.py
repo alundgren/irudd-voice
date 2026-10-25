@@ -192,3 +192,20 @@ def test_train_adds_the_drafter_to_a_gemma_folder(tmp_path, snapshots, monkeypat
     assert (result.folder / "drafter" / "model.safetensors").exists()
     assert (result.folder / "model-vision.safetensors").exists()
     assert models.verify(result.folder) == []
+    # Fusing and copying the drafter are timed apart.
+    assert {"fuse_seconds", "drafter_seconds"} <= result.timings.keys()
+
+
+def test_train_without_a_drafter_records_no_drafter_time(tmp_path, monkeypatch):
+    fake_utils = types.ModuleType("mlx_lm.utils")
+    fake_utils.load = lambda source, return_config: (object(), object(), {})
+    monkeypatch.setitem(sys.modules, "mlx_lm", types.ModuleType("mlx_lm"))
+    monkeypatch.setitem(sys.modules, "mlx_lm.utils", fake_utils)
+    qwen = models.candidate("qwen3.5-2b")
+    monkeypatch.setattr(train, "choose_base", lambda cand, models_dir: (tmp_path, "bf16"))
+    monkeypatch.setattr(train, "train_lora", lambda *args, **kwargs: {"train": [], "valid": [], "peak_memory_gb": 1.0})
+    monkeypatch.setattr(train, "fuse_and_save",
+                        lambda model, tokenizer, config, source, staging, base_weights: converted_folder(staging))
+    monkeypatch.setattr(train, "package_version", lambda name: "0.32.2")
+    result = train.train_tiny(qwen, tmp_path / "models", settings=train.LoraSettings(iterations=4))
+    assert result.manifest["drafter"] is None and "drafter_seconds" not in result.timings

@@ -58,11 +58,14 @@ if [[ -n "${IRUDD_VOICE_PARITY_DIR:-}" ]]; then
 fi
 
 # Slow: the app's cleanup path on the real default model (load, the e2e
-# sentence, a 458-word thought in pieces, the training lease, row fields).
+# sentence, a 458-word thought in pieces, the training lease, row fields,
+# and that its drafter really drafts), then drafted against plain tokens at
+# 5 and 6 tokens and both drafter fallbacks (draft-check).
 # Needs the model folder from `irudd-voice models prepare gemma-4-e2b`.
 if [[ -n "${IRUDD_VOICE_CLEANUP_CHECK:-}" ]]; then
   echo "== Cleanup check (real model)"
   "$tool" thought-check
+  "$tool" draft-check
 fi
 
 echo "== Probe build"

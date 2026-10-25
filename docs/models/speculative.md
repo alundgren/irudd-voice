@@ -188,6 +188,19 @@ rule (Swift's token in Python's top 3 and within 0.5), and chose this option.
   one, loads the model through MLXVLM, and decodes speculatively. Stop
   tokens, `max_tokens` (hit_limit) and the deadline work as before. Without
   a drafter, it loads and decodes exactly as it did.
+- **A drafter problem never fails a cleanup.** If the drafter (or the
+  MLXVLM class) fails to load, the model loads the plain way. If the
+  speculative iterator can't start, that generation runs one token at a
+  time. The reason shows in the helper status (`drafterProblem`) and in
+  clean replies, and the app logs it as a `cleanup` warning in `events`,
+  once per reason.
+- **Checks that drafting is really on:** `xpc-check` and `thought-check`
+  fail on a folder whose manifest names a drafter when nothing was drafted
+  or a drafter problem was reported. `draft-check` (run by `scripts/test.sh`
+  with `IRUDD_VOICE_CLEANUP_CHECK`) compares drafted and plain tokens at 5
+  and 6 tokens. It also forces both fallbacks: a drafter that can't start,
+  and a drafter folder with a broken config. Both give the plain tokens and
+  a reason.
 - Older app builds keep working with the new folder: they ignore the
   `drafter` field, verify the extra files, and their MLXLLM class drops the
   vision weights. They just don't draft.

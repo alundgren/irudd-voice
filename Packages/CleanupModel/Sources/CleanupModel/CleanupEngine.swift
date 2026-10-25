@@ -25,8 +25,9 @@ public struct GenerationResult: Sendable {
     /// With a drafter: tokens it proposed and how many the model accepted.
     public var draftedTokens = 0
     public var acceptedTokens = 0
-    /// With a drafter: why the iterator went back to one token at a time,
-    /// or nil when it kept drafting.
+    /// With a drafter: why this generation didn't draft (the speculative
+    /// iterator couldn't start) or went back to one token at a time part-way;
+    /// nil when it kept drafting.
     public var draftingStopped: String?
 }
 
@@ -72,10 +73,13 @@ public struct LoadTimings: Sendable {
 
 public enum CleanupEngineError: Error, LocalizedError {
     case notLoaded
+    /// `failDraftStart` is set (draft-check).
+    case draftStartFailed
 
     public var errorDescription: String? {
         switch self {
         case .notLoaded: "No cleanup model is loaded."
+        case .draftStartFailed: "draft start failure requested by draft-check"
         }
     }
 }
@@ -99,6 +103,16 @@ public actor CleanupEngine: CleanupBackend {
     private var drafterModel: (any MTPDrafterModel)?
     /// The loaded drafter, or nil when the model decodes one token at a time.
     public private(set) var drafter: Drafter?
+    /// Why the requested drafter isn't loaded (it or its model class failed
+    /// to load, so the model loaded the plain way); nil otherwise.
+    public private(set) var drafterProblem: String?
+    /// Makes generations act as if the speculative iterator couldn't start.
+    /// For voice-model-tool's draft-check only (`setFailDraftStart`).
+    public private(set) var failDraftStart = false
+
+    public func setFailDraftStart(_ fail: Bool) {
+        failDraftStart = fail
+    }
     /// Generation stops at these: the eos IDs from config.json and
     /// generation_config.json, the tokenizer's eos, and the chat template's
     /// end-of-turn token. Same rule as the Python CLI (generation.py).
@@ -132,7 +146,7 @@ public actor CleanupEngine: CleanupBackend {
 
     public func load(folder: URL, expectedID: String?, verify: Bool, order: UInt64) async throws -> LoadedModel {
         let (id, timings) = try await load(folder: folder, expectedID: expectedID, verify: verify, order: order)
-        return LoadedModel(id: id, seconds: timings.totalSeconds)
+        return LoadedModel(id: id, seconds: timings.totalSeconds, drafting: drafter != nil, drafterProblem: drafterProblem)
     }
 
     private func load(folder: URL, expectedID: String?, verify: Bool, drafter choice: DrafterChoice = .fromManifest(),
@@ -162,7 +176,9 @@ public actor CleanupEngine: CleanupBackend {
         let start = clock.now
         // An unload or a newer load ran while the factory worked: the
         // weights were dropped inside `loadContext`, before it returned.
-        guard let (context, drafterModel) = try await loadContext(folder: folder, drafter: drafter, order: order) else {
+        guard let (context, drafterModel, drafterProblem) = try await loadContext(
+            folder: folder, drafter: drafter, order: order)
+        else {
             throw CleanupBackendError.superseded
         }
         let loadTime = clock.now - start
@@ -179,7 +195,8 @@ public actor CleanupEngine: CleanupBackend {
         }
         self.context = context
         self.drafterModel = drafterModel
-        self.drafter = drafter
+        self.drafter = drafterModel == nil ? nil : drafter
+        self.drafterProblem = drafterProblem
         self.stopTokens = stops
         self.manifest = manifest
         self.folder = folder
@@ -196,7 +213,7 @@ public actor CleanupEngine: CleanupBackend {
     /// released before this returns, so an unload waiting for it knows the
     /// memory is free.
     private func loadContext(folder: URL, drafter: Drafter?, order: UInt64) async throws
-        -> (ModelContext, (any MTPDrafterModel)?)?
+        -> (ModelContext, (any MTPDrafterModel)?, String?)?
     {
         loadsInFlight += 1
         defer {
@@ -213,22 +230,32 @@ public actor CleanupEngine: CleanupBackend {
 
     /// Kept apart from `loadContext` so a superseded context is released
     /// when this returns, before `loadContext` counts the load as done.
+    /// When the drafter or the model class it needs fails to load, loads the
+    /// model the plain way and returns the reason (`DrafterFallback`).
     private func factoryLoad(folder: URL, drafter: Drafter?, order: UInt64) async throws
-        -> (ModelContext, (any MTPDrafterModel)?)?
+        -> (ModelContext, (any MTPDrafterModel)?, String?)?
     {
-        guard let drafter else {
+        func plain() async throws -> (ModelContext, (any MTPDrafterModel)?)? {
             let context = try await LLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
             return sequence.isCurrent(order) ? (context, nil) : nil
         }
-        await Self.registerDrafters()
-        let drafterModel = try await MTPDrafterModelFactory.shared.load(
-            from: drafter.folder, using: LocalTokenizerLoader()).model
-        // Gemma 4's assistant drafts only for MLXVLM's Gemma 4 class, which
-        // also needs the vision tower's weights in the folder.
-        let context = drafterModel is Gemma4AssistantDraftModel
-            ? try await VLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
-            : try await LLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
-        return sequence.isCurrent(order) ? (context, drafterModel) : nil
+        guard let drafter else {
+            return try await plain().map { ($0.0, nil, nil) }
+        }
+        let (loaded, problem) = try await DrafterFallback.run({
+            await Self.registerDrafters()
+            let drafterModel = try await MTPDrafterModelFactory.shared.load(
+                from: drafter.folder, using: LocalTokenizerLoader()).model
+            // A newer load or unload started: don't read the whole model too.
+            guard sequence.isCurrent(order) else { return nil }
+            // Gemma 4's assistant drafts only for MLXVLM's Gemma 4 class, which
+            // also needs the vision tower's weights in the folder.
+            let context = drafterModel is Gemma4AssistantDraftModel
+                ? try await VLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
+                : try await LLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
+            return sequence.isCurrent(order) ? (context, drafterModel) : nil
+        }, otherwise: plain)
+        return loaded.map { ($0.0, $0.1, problem.map { "the drafter didn't load: \($0)" }) }
     }
 
     private static func registerDrafters() async {
@@ -260,6 +287,7 @@ public actor CleanupEngine: CleanupBackend {
         context = nil
         drafterModel = nil
         drafter = nil
+        drafterProblem = nil
         manifest = nil
         folder = nil
         stopTokens = []
@@ -281,7 +309,10 @@ public actor CleanupEngine: CleanupBackend {
             reply: result.timedOut ? nil : result.text, hitLimit: result.hitLimit, timedOut: result.timedOut,
             promptTokens: result.promptTokens.count, generatedTokens: result.tokens.count,
             promptSeconds: result.promptSeconds, generateSeconds: result.generateSeconds,
-            error: result.timedOut ? "Cleanup passed its deadline." : nil)
+            error: result.timedOut ? "Cleanup passed its deadline." : nil,
+            draftedTokens: drafter == nil ? nil : result.draftedTokens,
+            acceptedTokens: drafter == nil ? nil : result.acceptedTokens,
+            drafterProblem: result.draftingStopped)
     }
 
     /// Greedy decoding with the chat template and `chat_template_options`
@@ -314,10 +345,20 @@ public actor CleanupEngine: CleanupBackend {
         let start = clock.now
         let input = LMInput(tokens: MLXArray(promptTokens))
         var result: GenerationResult
+        var speculative: MTPSpeculativeTokenIterator?
+        var startProblem: String?
         if let drafterModel, let drafter, drafter.draftTokens > 0 {
-            var iterator = try MTPSpeculativeTokenIterator(
-                input: input, mainModel: context.model, drafter: drafterModel, parameters: parameters,
-                blockSize: drafter.draftTokens + 1)
+            // A drafter that can't start never fails the cleanup: the model
+            // generates one token at a time instead (`DrafterFallback`).
+            let failStart = failDraftStart
+            (speculative, startProblem) = try DrafterFallback.run({
+                if failStart { throw CleanupEngineError.draftStartFailed }
+                return try MTPSpeculativeTokenIterator(
+                    input: input, mainModel: context.model, drafter: drafterModel, parameters: parameters,
+                    blockSize: drafter.draftTokens + 1)
+            }, otherwise: { nil })
+        }
+        if var iterator = speculative {
             result = run(&iterator, deadline: deadline, clock: clock, start: start)
             result.draftedTokens = iterator.proposedCount
             result.acceptedTokens = iterator.acceptedCount
@@ -325,6 +366,7 @@ public actor CleanupEngine: CleanupBackend {
         } else {
             var iterator = try TokenIterator(input: input, model: context.model, parameters: parameters)
             result = run(&iterator, deadline: deadline, clock: clock, start: start)
+            result.draftingStopped = startProblem.map { "drafting couldn't start: \($0)" }
         }
         result.promptTokens = promptTokens
         result.text = context.tokenizer.decode(tokenIds: result.tokens, skipSpecialTokens: false)

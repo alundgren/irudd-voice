@@ -305,10 +305,13 @@ def train(
         try:
             started = time.perf_counter()
             fuse_and_save(model, tokenizer, config, source, staging, base_weights)
+            timings["fuse_seconds"] = round(time.perf_counter() - started, 1)
             # mlx-lm's save keeps only the text model; the drafter's target
             # class needs the vision tower back, and the folder its drafter.
+            started = time.perf_counter()
             drafter = add_drafter(staging, cand, log=log)
-            timings["fuse_seconds"] = round(time.perf_counter() - started, 1)
+            if drafter is not None:
+                timings["drafter_seconds"] = round(time.perf_counter() - started, 1)
             training = {
                 "method": "lora",
                 "dataset_hash": dataset_hash or files_hash(train_path, valid_path),

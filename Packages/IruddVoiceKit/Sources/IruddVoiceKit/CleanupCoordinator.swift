@@ -265,7 +265,12 @@ public actor CleanupCoordinator {
         terms = readTerms()
         setState(.loaded(id))
         await log(.info, String(format: "Loaded %@ in %.1f s (%d vocabulary terms)", id,
-                                (clock.now - start).inSeconds, terms.count))
+                                (clock.now - start).inSeconds, terms.count)
+                  + (response.status.drafting == true ? ", with its drafter" : ""))
+        if let problem = response.status.drafterProblem {
+            await log(.warning, "\(id) loaded without its drafter, so cleanup is slower: \(problem)")
+        }
+        lastDrafterProblem = nil
         return .loaded
     }
 
@@ -299,8 +304,17 @@ public actor CleanupCoordinator {
         guard let model = loadedModel, case .loaded = state else {
             return .raw(transcript, .noModel, detail: "No cleanup model loaded (\(state.statusValue)).")
         }
-        return await ThoughtCleaner(helper: helper, prompt: prompt, terms: terms, modelID: model).clean(transcript)
+        let result = await ThoughtCleaner(helper: helper, prompt: prompt, terms: terms, modelID: model).clean(transcript)
+        // Logged once per reason, not for every thought.
+        if let problem = result.drafterProblem, problem != lastDrafterProblem {
+            lastDrafterProblem = problem
+            await log(.warning, "Cleaned without \(model)'s drafter, so more slowly: \(problem)")
+        }
+        return result
     }
+
+    /// The last drafter problem logged since the model loaded.
+    private var lastDrafterProblem: String?
 
     // MARK: Status keys
 

@@ -91,7 +91,9 @@ into the database's `models` table with the same `id` and the manifest JSON.
   `<folder>/config.json` must be listed. `draft_tokens` is a whole number of
   at least 1: the tokens drafted per round. The app refuses a folder whose
   `drafter` breaks any of these rules. With a drafter, the app generates with
-  speculative decoding; without one, it decodes one token at a time.
+  speculative decoding; without one, it decodes one token at a time. When a
+  valid entry's drafter doesn't load or can't start, the app still cleans,
+  one token at a time, and logs why (a `cleanup` warning in `events`).
 
   Gemma 4's assistant drafts only for mlx-swift-lm's MLXVLM Gemma 4 class,
   so a Gemma folder with a drafter also holds the base model's vision tower:
