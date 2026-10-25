@@ -7,9 +7,7 @@ struct SettingsView: View {
         TabView {
             Tab("General", systemImage: "gearshape") { GeneralSettings() }
             Tab("Hotkeys", systemImage: "keyboard") { HotkeySettings() }
-            Tab("Model", systemImage: "cpu") {
-                LaterPane(text: "The cleanup model arrives in a later version. Until then you get Apple's raw text.")
-            }
+            Tab("Model", systemImage: "cpu") { ModelSettings() }
             Tab("Data", systemImage: "internaldrive") { DataSettings() }
             Tab("Updates", systemImage: "arrow.down.circle") { UpdateSettings() }
         }
@@ -48,15 +46,108 @@ private struct GeneralSettings: View {
     }
 }
 
-private struct LaterPane: View {
-    let text: String
+/// The cleanup model: which one is active, what it was trained on, how its
+/// last eval went, and what the helper is doing.
+private struct ModelSettings: View {
+    @Environment(AppModel.self) private var model
 
     var body: some View {
-        Text(text)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .padding()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        Form {
+            Section {
+                if let overview = model.modelOverview {
+                    LabeledContent("Active model") {
+                        Text(overview.activeID).font(.body.monospaced()).textSelection(.enabled)
+                    }
+                    LabeledContent("Kind") {
+                        if let training = overview.training {
+                            Text("Trained\(Self.trainedDetail(training))")
+                        } else {
+                            Text(overview.isDefault ? "Base model (the default)" : "Base model")
+                        }
+                    }
+                    if let previous = overview.previousID {
+                        LabeledContent("Previous") {
+                            Text(previous).font(.body.monospaced()).textSelection(.enabled)
+                        }
+                    }
+                }
+                LabeledContent("Status") { CleanupStatusLine() }
+            } footer: {
+                Text("Each thought is cleaned on this Mac before it's pasted. If cleanup fails, times out or changes the meaning, your text is pasted as it was heard.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let eval = model.modelOverview?.eval {
+                Section("Last eval") {
+                    LabeledContent("Against") {
+                        Text(eval.incumbentID ?? "the previous model").font(.body.monospaced())
+                    }
+                    LabeledContent("Votes won") {
+                        if let percent = eval.winPercent {
+                            Text("\(eval.wins) of \(eval.decided) (\(percent.formatted(.number.precision(.fractionLength(0))))%)")
+                        } else {
+                            Text("No decided votes").foregroundStyle(.secondary)
+                        }
+                    }
+                    if let failed = eval.thoughtsFailed, let before = eval.incumbentThoughtsFailed {
+                        LabeledContent("Failed a hard check") {
+                            Text("\(failed) of \(eval.compared) test thoughts (previous: \(before))")
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .task {
+            // Follows promote, rollback and the training lease while open.
+            while !Task.isCancelled {
+                await model.refreshModelInfo()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    private static func trainedDetail(_ training: ModelManifest.Training) -> String {
+        var parts: [String] = []
+        if let at = training.trainedAt.flatMap(CleanupCoordinator.parseTime) {
+            parts.append(at.formatted(date: .abbreviated, time: .shortened))
+        }
+        if let chunks = training.chunks { parts.append("on \(chunks) thoughts") }
+        return parts.isEmpty ? "" : " " + parts.joined(separator: ", ")
+    }
+}
+
+/// What the cleanup helper is doing, in plain words.
+private struct CleanupStatusLine: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if let snapshot = model.cleanupSnapshot {
+            VStack(alignment: .trailing, spacing: 2) {
+                switch snapshot.state {
+                case .loaded(let id):
+                    Label("Loaded \(id)", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                case .loading(let id):
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("Loading \(id)…")
+                    }
+                case .unloaded:
+                    Text("Not loaded").foregroundStyle(.secondary)
+                case .unloadedForTraining:
+                    Text("Unloaded while training runs. Text is pasted as heard until it's done.")
+                        .foregroundStyle(.secondary)
+                case .failed(let reason):
+                    Text("Failed: \(reason)").foregroundStyle(.red).textSelection(.enabled)
+                }
+                if let bytes = snapshot.helperBytes, bytes > 0 {
+                    Text("Helper memory: \(Int64(bytes).formatted(.byteCount(style: .memory)))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .multilineTextAlignment(.trailing)
+        } else {
+            Text("Starting…").foregroundStyle(.secondary)
+        }
     }
 }
 
