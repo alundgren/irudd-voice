@@ -60,8 +60,12 @@ regenerated 2026-10-25 12:16Z with `<|endoftext|>` as a Qwen stop token).
 The strict result is identical tokens. The tie-aware result
 (`tests/parity-gaps.py`) asks for identical prompt tokens and, where the
 generated tokens differ, a gap of at most 0.5 between Python's logits for
-its own token and for Swift's token at that step. Whether the tie-aware rule
-is acceptable is a decision for the project owner.
+its own token and for Swift's token at that step. The project owner accepted
+the tie-aware rule on 2026-10-25, with one addition: at each difference,
+Swift's token must be among Python's top 3 choices (top 3 rather than second,
+because qwen3.5-2b p08 is a three-way near-tie: " dot" 18.5, " Python" 18.5,
+" for" 18.375). `tests/model-parity.sh` passes a model when its tokens are
+identical or this rule holds.
 
 | Model | Prompt tokens identical | Strict: generated tokens identical | Tie-aware |
 | --- | --- | --- | --- |

@@ -4,8 +4,12 @@ For each input where the Swift tokens differ from the Python reference,
 replays the reference with Python mlx-lm up to the first differing token
 (the same way generate_step feeds it: all prompt tokens but the last, then
 one token at a time) and prints the logits of Python's and Swift's tokens at
-that step. The tie-aware rule passes when the prompt tokens are identical
-everywhere and every difference has a gap of at most --max-gap.
+that step. The tie-aware rule (accepted by the project owner on 2026-10-25)
+passes when the prompt tokens are identical everywhere and, at every
+difference, Swift's token is among Python's top 3 choices and within
+--max-gap of Python's first choice in Python's own logits. Top 3 rather than
+second: when Python's top two tie exactly, a near-tie third is just as
+legitimate a pick.
 
     python parity-gaps.py MODEL_DIR REFERENCE.json SWIFT.json [--max-gap 0.5]
 
@@ -72,16 +76,20 @@ def main() -> int:
             mx.eval(logits)
             if step < index:
                 token = python[step]
-        top = int(mx.argmax(logits).item())
+        order = mx.argsort(-logits)
+        top = int(order[0].item())
+        top3 = [int(order[i].item()) for i in range(3)]
         a, b = python[index], ours[index]
         gap = logits[a].item() - logits[b].item()
         within = gap <= args.max_gap
-        ok = ok and within and top == a
+        near = b in top3
+        ok = ok and within and top == a and near
         print(
             f"{item['id']}: token {index}: python {a} {tokenizer.decode([a])!r} {logits[a].item():.4f}, "
             f"swift {b} {tokenizer.decode([b])!r} {logits[b].item():.4f}, gap {gap:.4f} "
             f"({'within' if within else 'over'} {args.max_gap})"
             + ("" if top == a else f"; replay picked {top}, not Python's token")
+            + ("" if near else f"; Swift's token isn't in Python's top 3 ({top3})")
             + (" [stop token]" if a in stops or b in stops else "")
         )
     total = len(reference["items"])
