@@ -24,3 +24,26 @@ most every 10 s and after each thought), and loads a different model only
 when no thought is in progress. `promote` reports success once
 `cleanup.loaded_model` equals the new ID, or reports that the app hasn't
 picked it up yet.
+
+## Eval reports (`models.eval_report_json`)
+
+`irudd-voice eval-compare <model>` stores its report in the candidate's
+`models` row. Settings → Model reads these fields (the rest is per-thought
+detail for `promote` and `spot-check`):
+
+| Field | Meaning |
+| --- | --- |
+| `kind`, `version` | `"eval-compare"`, `1` |
+| `candidate.id`, `incumbent.id` | The model scored and the model it was compared with (the active one then) |
+| `created_at` | When the report was made, UTC |
+| `summary.compared` | Frozen test thoughts both models cleaned |
+| `summary.votes` | `win`, `loss` (the candidate's), `tie`, `same` (identical output), `split` (the two orders disagreed), `failed` |
+| `summary.decided`, `summary.win_rate` | `win` + `loss`, and `win` / `decided` (null when nothing was decided) |
+| `summary.hard_checks` | `candidate_thoughts_failed`, `incumbent_thoughts_failed`, `new_failures` (checks the candidate failed where the incumbent passed) |
+| `summary.closeness` | `candidate`, `incumbent`: mean similarity of what each would paste to the label (1.0 = same) |
+| `decision.promotable`, `decision.reasons` | Whether `promote` would accept it now, and why not |
+| `spot_check` | Optional: `answered`, `agreed`, `agreement` from `irudd-voice spot-check` |
+
+When and on how many thoughts a model was trained are the row's
+`trained_at` and `trained_chunks`. A row with no report (base models) has
+`eval_report_json` null.

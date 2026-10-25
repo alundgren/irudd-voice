@@ -95,7 +95,8 @@ def lower_priority(log) -> None:
     priority (nice 10) and the Darwin background policy (`taskpolicy -b`),
     which also throttles its disk reads."""
     os.nice(10)
-    result = subprocess.run(["taskpolicy", "-b", "-p", str(os.getpid())], capture_output=True, text=True)
+    result = subprocess.run(["taskpolicy", "-b", "-p", str(os.getpid())], capture_output=True, text=True,
+                            check=False)
     if result.returncode != 0:
         log(f"couldn't lower the priority with taskpolicy: {result.stderr.strip()}")
 

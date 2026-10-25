@@ -7,7 +7,7 @@ import random
 import signal
 import subprocess
 import sys
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pytest
 from labeling import rows
@@ -124,7 +124,7 @@ def test_train_stops_when_the_running_app_keeps_its_model(app_db, models_dir, da
     monkeypatch.setattr(appstate, "CONFIRM_SECONDS", 0.2)
     con = db.connect(app_db, write=True)
     appstate.write(con, appstate.STATUS, "loaded")
-    appstate.write(con, appstate.STATUS_AT, appstate.iso(appstate.datetime.now(appstate.UTC)))
+    appstate.write(con, appstate.STATUS_AT, appstate.iso(datetime.now(UTC)))
     con.close()
     assert run_train(app_db, models_dir, "--dataset", str(dataset_dir)) == 1
     assert fake_trainer.seen == []
@@ -417,7 +417,7 @@ def test_a_promotion_killed_halfway_leaves_the_old_model_active(app_db, models_d
     before = active_row(app_db)
     script = tmp_path / "kill.py"
     script.write_text(KILL_SCRIPT)
-    process = subprocess.run([sys.executable, str(script), str(app_db), target, str(models_dir)])
+    process = subprocess.run([sys.executable, str(script), str(app_db), target, str(models_dir)], check=False)
     assert process.returncode == -signal.SIGKILL
     assert active_row(app_db) == before
     assert rows(app_db, "PRAGMA integrity_check") == [("ok",)]

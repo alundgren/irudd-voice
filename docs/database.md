@@ -51,3 +51,17 @@ One SQLite file holds everything the app records:
 | `raw_text`, `recognizer`, `transcribed_at` | Apple's text and which engine produced it |
 | `cleaned_text`, `cleanup_*`, `pasted_text`, `paste_*` | Filled in by later versions |
 | `schema_version`, `app_version`, `prompt_version` | What wrote the row |
+
+### `models` and `active_model`
+
+| Column | Meaning |
+| --- | --- |
+| `models.id` | The model folder's name in `models/`, also `manifest.json`'s `id` |
+| `models.manifest_json` | The folder's manifest; `training` holds how it was trained |
+| `models.dataset_hash`, `trained_chunks`, `trained_at` | Copied from the manifest's `training` block; null for base models |
+| `models.eval_report_json` | The latest `irudd-voice eval-compare` report for this model (fields in `shared/app-state.md`) |
+| `active_model.model_id` | The model the app uses; null means the default (`gemma-4-e2b-base-q4`) |
+| `active_model.previous_model_id` | What was active before; `irudd-voice rollback` swaps the two |
+
+`promote` and `rollback` change `active_model` in one transaction and log an
+`events` row (category `model`) in the same transaction.

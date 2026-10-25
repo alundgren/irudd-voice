@@ -125,3 +125,60 @@ it writes to a new temporary folder. `dataset.json` also records
 typed input and a spoken-looking version (lowercase, no sentence
 punctuation, maybe a filler). Selection and test get no variants, so they
 measure real dictation only.
+
+## Training runs: train, score, promote
+
+In Claude Code in this repo, say "let's do a voice training run" and the
+`voice-train` skill (`.claude/skills/voice-train/SKILL.md`) walks through
+these steps and asks before promoting.
+
+```sh
+uv run --group ml irudd-voice train [CANDIDATE | --candidate C] [--dataset DIR] [--iterations N] [--db PATH]
+uv run --group ml irudd-voice eval-compare <model-id> [--incumbent ID] [--teacher claude|codex] [--out FILE]
+uv run irudd-voice spot-check <model-id | report.json> [--pairs 10]
+uv run irudd-voice promote <model-id> [--wait 15]
+uv run irudd-voice rollback
+uv run irudd-voice models status
+```
+
+**`train`** always starts again from the candidate's base weights (the
+active model's candidate by default, else `gemma-4-e2b`) and trains LoRA on
+a `dataset build` folder (built now when `--dataset` is missing): last 16
+layers, batch 1, gradient checkpointing, about two passes over the training
+examples (100 to 1000 steps). It runs at low priority (nice 10 and
+`taskpolicy -b`). The result is `<candidate>-ft-<date>-<n>/` in the models
+folder, recorded in the `models` table of the app's database (or `--db`).
+
+While a model is in memory, `train` and `eval-compare` hold the
+`cleanup.unload_until` lease (`shared/app-state.md`): the app unloads its
+model and pastes raw text until the lease is gone. The lease is refreshed
+every 30 s and removed when the command ends, also on failure, Ctrl-C or
+SIGTERM; if the command is killed outright it runs out after 2 minutes. If
+the app is running and doesn't confirm within 60 s, the command stops
+without loading anything.
+
+**`eval-compare`** cleans every frozen test thought (test days, frozen
+accepted labels) with the candidate and the incumbent (the active model by
+default), runs the hard checks, and measures how close what each would paste
+is to the label. Then the teacher CLI judges each pair blind: it sees the
+transcript and outputs A and B, never the label, and decides by a fixed
+checklist (`shared/judge-prompt.json`). Each pair is asked twice with A and
+B swapped; the vote counts only when both answers pick the same output.
+Identical outputs count as `same` without a call. The judge runs exactly
+like a label call (see above). The report goes into the candidate's
+`models` row; `--out` also writes it to a file, which contains your text.
+
+**`promote`** refuses unless the report still matches: the same candidate
+and incumbent folders (manifest hashes), the candidate's dataset, the frozen
+test thoughts, the cleanup prompt, hard checks, judge prompt and vocabulary.
+It then needs at least 100 compared thoughts, at least 55% wins among the
+decided votes (ties, identical outputs, order disagreements and failed calls
+don't count), and no hard check the candidate fails on a thought where the
+incumbent passed it. It changes `active_model` in one transaction (the old
+model is kept as `previous_model_id`), and waits up to `--wait` seconds for
+the app to report it loaded. `rollback` swaps the active and previous model;
+running it twice undoes it.
+
+**`spot-check`** shows 10 random pairs the judge decided, in random A/B
+order without saying which model is which, asks you to pick, and reports how
+often you agreed with the judge. It's optional and never blocks `promote`.
