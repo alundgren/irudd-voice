@@ -87,6 +87,9 @@ def promote(path: Path, model_id: str, models_dir: Path, terms: list[str]) -> st
             report = row["report"]
             if not report or report.get("kind") != compare.REPORT_KIND or report.get("version") != compare.REPORT_VERSION:
                 raise ModelError(f"{model_id} has no eval-compare report; run: irudd-voice eval-compare {model_id}")
+            if "items" not in report:
+                raise ModelError(f"the eval-compare report for {model_id} has no per-thought results: Delete All "
+                                 f"Recordings removed them. Run it again: irudd-voice eval-compare {model_id}")
             if report.get("candidate", {}).get("id") != model_id:
                 raise ModelError(f"the report stored with {model_id} is for {report.get('candidate', {}).get('id')}")
             current_id, _ = compare.active(con)
@@ -147,6 +150,9 @@ def report_loaded(path: Path, model_id: str, wait: float, sleep=time.sleep, cloc
         con.close()
     if status is None:
         print(f"The app hasn't reported a loaded model (it may not be running); it loads {model_id} when it starts.")
+    elif status.startswith("failed"):
+        print(f"The app couldn't load a model ({status}); it pastes raw text until that's fixed. "
+              "Check with: irudd-voice events")
     else:
         print(f"The app hasn't loaded {model_id} yet (status: {status}, loaded: {loaded or 'nothing'}). "
               "It switches at its next idle moment; check with: irudd-voice models status")
@@ -212,6 +218,8 @@ def read_report(source: str, path: Path) -> tuple[dict, str | None]:
         con.close()
     if row is None or not row["report"]:
         raise ModelError(f"no eval-compare report for {source}; run: irudd-voice eval-compare {source}")
+    if "items" not in row["report"]:
+        raise ModelError(f"the report for {source} has no pairs left (Delete All Recordings removed them)")
     return row["report"], source
 
 

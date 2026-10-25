@@ -137,6 +137,32 @@ def test_old_status_that_changes_while_waiting_is_a_running_app(app_db):
         wait(app_db, Clock(busy))
 
 
+def test_fresh_heartbeat_means_a_running_app_even_with_an_old_status(app_db):
+    old = appstate.iso(datetime.now(UTC) - timedelta(hours=3))
+    set_state(app_db, {appstate.STATUS: "loaded", appstate.STATUS_AT: old,
+                       appstate.CHECKED_AT: appstate.iso(datetime.now(UTC))})
+    with pytest.raises(appstate.AppBusy):
+        wait(app_db, Clock())
+
+
+def test_old_unchanged_heartbeat_means_the_app_isnt_running(app_db):
+    old = appstate.iso(datetime.now(UTC) - timedelta(hours=3))
+    set_state(app_db, {appstate.STATUS: "loaded", appstate.STATUS_AT: old, appstate.CHECKED_AT: old})
+    assert wait(app_db, Clock()) == "the app isn't running"
+
+
+def test_old_heartbeat_that_moves_while_waiting_is_a_running_app(app_db):
+    old = appstate.iso(datetime.now(UTC) - timedelta(hours=3))
+    set_state(app_db, {appstate.STATUS: "loaded", appstate.STATUS_AT: old, appstate.CHECKED_AT: old})
+
+    def beat(t):
+        if t == 10:
+            set_state(app_db, {appstate.CHECKED_AT: appstate.iso(datetime.now(UTC))})
+
+    with pytest.raises(appstate.AppBusy):
+        wait(app_db, Clock(beat))
+
+
 def test_loaded_model(app_db):
     assert appstate.loaded_model(app_db) is None
     set_state(app_db, {appstate.LOADED_MODEL: ""})

@@ -10,7 +10,7 @@ import sys
 from datetime import UTC, date, datetime
 
 import pytest
-from labeling import rows
+from labeling import add_chunk, add_label, rows
 from trainloop import FakeJudge, add_test_thought, items, model_folder
 
 from irudd_voice import appstate, cli, compare, db, model_commands, models, promote, train
@@ -132,6 +132,16 @@ def test_train_stops_when_the_running_app_keeps_its_model(app_db, models_dir, da
     assert "didn't unload its model" in capsys.readouterr().err
 
 
+def test_a_dataset_train_builds_itself_is_deleted_afterwards(app_db, models_dir, fake_trainer, no_vocabulary):
+    for n, (spoken, cleaned) in enumerate(train.TINY_REQUESTS):
+        chunk_id = add_chunk(app_db, spoken, day=f"2026-10-{n // 2 + 1:02d}")
+        add_label(app_db, chunk_id, cleaned)
+    assert run_train(app_db, models_dir, "--vocabulary", str(no_vocabulary)) == 0
+    data = fake_trainer.seen[0]["data"]
+    assert data.name.startswith("irudd-voice-dataset-")
+    assert not data.exists()
+
+
 def test_train_needs_train_and_selection_examples(app_db, models_dir, fake_trainer, capsys, no_vocabulary):
     # No --dataset: train builds one, here from an empty database.
     assert run_train(app_db, models_dir, "--vocabulary", str(no_vocabulary)) == 1
@@ -182,6 +192,8 @@ def test_eval_compare_scores_votes_and_stores_a_bound_report(app_db, models_dir,
     same = add_test_thought(app_db, "do not delete the cache", "Do not delete the cache.")
     split = add_test_thought(app_db, "make it blue sorry make it green", "Make it green.")
     worse = add_test_thought(app_db, "set the retry count to three", "Set the retry count to three.")
+    add_test_thought(app_db, "label canary thought", "LABEL-CANARY-7f3a9 must never reach the judge")
+    fake_models[CANDIDATE]["label canary thought"] = "Label canary thought."
     fake_models[CANDIDATE].update({"um set the port to eighty": "Set the port to eighty.",
                                    "do not delete the cache": "Do not delete the cache.",
                                    "make it blue sorry make it green": "Make it green.",
@@ -197,11 +209,16 @@ def test_eval_compare_scores_votes_and_stores_a_bound_report(app_db, models_dir,
     assert cli.main(["eval-compare", CANDIDATE, "--db", str(app_db), "--models-dir", str(models_dir),
                      "--vocabulary", str(no_vocabulary)]) == 0
     out = capsys.readouterr().out
-    assert "1 won, 1 lost (0 tie, 1 same output, 1 order disagreed, 0 failed)" in out
-    assert "only 4 test thoughts compared; promotion needs 100" in out
+    assert "1 won, 1 lost (1 tie, 1 same output, 1 order disagreed, 0 failed)" in out
+    assert "only 5 test thoughts compared with a usable vote; promotion needs 100" in out
     assert all(fake_models["leases"])  # generation ran under the unload lease
     assert lease_value(app_db) is None
-    assert len(judge.calls()) == 6  # identical outputs need no judge
+    calls = judge.calls()
+    assert len(calls) == 8  # identical outputs need no judge
+    # Labels never leave: not in any judge's prompt or arguments.
+    assert any("label canary thought" in call["stdin"] for call in calls)
+    for call in calls:
+        assert "LABEL-CANARY" not in call["stdin"] and not any("LABEL-CANARY" in a for a in call["argv"])
 
     report = json.loads(rows(app_db, "SELECT eval_report_json FROM models WHERE id = ?", (CANDIDATE,))[0][0])
     assert report["candidate"]["id"] == CANDIDATE and report["incumbent"]["id"] == BASE
@@ -231,6 +248,18 @@ def test_eval_compare_stops_after_three_failed_votes(app_db, models_dir, two_mod
                      "--vocabulary", str(no_vocabulary)]) == 1
     assert "failed 3 votes in a row" in capsys.readouterr().err
     assert rows(app_db, "SELECT eval_report_json FROM models WHERE id = ?", (CANDIDATE,)) == [(None,)]
+
+
+def test_eval_compare_fails_before_loading_when_the_judge_is_missing(app_db, models_dir, two_models, fake_models,
+                                                                    tmp_path, monkeypatch, no_vocabulary, capsys):
+    add_test_thought(app_db, "thought", "Thought.")
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    assert cli.main(["eval-compare", CANDIDATE, "--teacher", "codex", "--db", str(app_db), "--models-dir",
+                     str(models_dir), "--vocabulary", str(no_vocabulary)]) == 1
+    assert "`codex` isn't on PATH" in capsys.readouterr().err
+    assert fake_models["leases"] == [] and lease_value(app_db) is None
 
 
 def test_eval_compare_needs_frozen_test_thoughts(app_db, models_dir, two_models, no_vocabulary, capsys):
@@ -315,6 +344,14 @@ def test_promote_says_the_app_hasnt_switched_yet(app_db, models_dir, ready, caps
     assert f"hasn't loaded {CANDIDATE} yet (status: loaded, loaded: {BASE})" in capsys.readouterr().out
 
 
+def test_promote_mentions_a_failed_load(app_db, models_dir, ready, capsys):
+    con = db.connect(app_db, write=True)
+    appstate.write(con, appstate.STATUS, "failed: checksum differs")
+    con.close()
+    assert run_promote(app_db, models_dir, CANDIDATE) == 0
+    assert "couldn't load a model (failed: checksum differs)" in capsys.readouterr().out
+
+
 def refused(app_db, models_dir, capsys, model=CANDIDATE, *extra):
     assert run_promote(app_db, models_dir, model, *extra) == 1
     assert active_row(app_db) == []
@@ -329,6 +366,16 @@ def refused(app_db, models_dir, capsys, model=CANDIDATE, *extra):
 def test_promote_refuses_a_model_that_isnt_better(app_db, models_dir, ready, capsys, counts, reason):
     store_report(app_db, models_dir, CANDIDATE, BASE, items(**counts))
     assert reason in refused(app_db, models_dir, capsys)
+
+
+def test_promote_after_delete_all_asks_for_a_new_report(app_db, models_dir, ready, capsys):
+    # What Delete All Recordings leaves (ChunkStore.deleteAllRecordings).
+    con = db.connect(app_db, write=True)
+    con.execute("UPDATE models SET eval_report_json = json_remove(eval_report_json, '$.items')")
+    con.close()
+    assert "Delete All Recordings removed them" in refused(app_db, models_dir, capsys)
+    assert cli.main(["spot-check", CANDIDATE, "--db", str(app_db)]) == 1
+    assert "no pairs left" in capsys.readouterr().err
 
 
 def test_promote_refuses_without_a_report(app_db, models_dir, two_models, capsys):

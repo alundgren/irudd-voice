@@ -92,9 +92,9 @@ def register_command(args) -> int:
 
 
 def lower_priority(log) -> None:
-    """Training runs for minutes to hours next to your work: lowest CPU
-    priority (nice 10) and the Darwin background policy (`taskpolicy -b`),
-    which also throttles its disk reads."""
+    """Training runs for minutes to hours next to your work: a lower CPU
+    priority (nice +10; +20 is the lowest) and the Darwin background policy
+    (`taskpolicy -b`), which also throttles its disk reads."""
     os.nice(10)
     result = subprocess.run(["taskpolicy", "-b", "-p", str(os.getpid())], capture_output=True, text=True,
                             check=False)
@@ -156,7 +156,7 @@ def train_command(args) -> int:
 def train_run(args, name: str | None, log) -> int:
     """A full training run on labeled thoughts: always from the base
     weights, at low priority, with the app's model unloaded."""
-    from . import appstate, dataset, models, train, vocab
+    from . import dataset, vocab
 
     path = explicit_db(args) or db.DEFAULT_PATH
     con = db.connect(path)
@@ -164,15 +164,22 @@ def train_run(args, name: str | None, log) -> int:
         cand = train_candidate(con, name)
     finally:
         con.close()
-    data = args.dataset
-    if data is None:
-        data = Path(tempfile.mkdtemp(prefix="irudd-voice-dataset-"))
+    if args.dataset is not None:
+        return train_on(args, path, cand, args.dataset, log)
+    # The built dataset holds your text, so it lives only as long as the run.
+    with tempfile.TemporaryDirectory(prefix="irudd-voice-dataset-") as folder:
         con = db.connect(path, write=True)
         try:
-            dataset.build(con, data, vocab.load_terms(args.vocabulary))
+            dataset.build(con, Path(folder), vocab.load_terms(args.vocabulary))
         finally:
             con.close()
-        log(f"built the dataset in {data}")
+        log("built the dataset in a temporary folder")
+        return train_on(args, path, cand, Path(folder), log)
+
+
+def train_on(args, path: Path, cand, data: Path, log) -> int:
+    from . import appstate, models, train
+
     summary_path = data / "dataset.json"
     if not summary_path.exists():
         raise ModelError(f"{data} has no dataset.json; build it with: irudd-voice dataset build --out {data}")

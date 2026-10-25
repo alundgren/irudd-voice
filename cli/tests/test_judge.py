@@ -18,7 +18,11 @@ from irudd_voice import compare, judge, teacher
     ({"win": 11, "loss": 9, "tie": 50, "same": 30}, True),  # ties don't count
     ({"tie": 60, "same": 40}, False),  # nothing decided
     ({"win": 10, "loss": 9, "split": 81}, False),  # order disagreements don't count as wins
-    ({"win": 11, "loss": 9, "split": 70, "failed": 10}, True),
+    ({"win": 11, "loss": 9, "split": 70, "same": 10}, True),
+    # Failed votes don't count toward the 100.
+    ({"win": 100, "failed": 1}, True),
+    ({"win": 99, "failed": 1}, False),
+    ({"win": 11, "loss": 9, "split": 70, "failed": 10}, False),
 ])
 def test_promotion_rule_edges(counts, promotable):
     assert compare.decide(items(**counts))["promotable"] is promotable
@@ -30,7 +34,10 @@ def test_rule_reasons_name_every_problem():
     reasons = compare.decide(rows)["reasons"]
     assert reasons == ["won 5 of 10 decided votes (50.0%); promotion needs 55%",
                        "fails hard checks the incumbent passed (numbers 1)"]
-    assert compare.decide(items(win=3))["reasons"][0] == "only 3 test thoughts compared; promotion needs 100"
+    assert compare.decide(items(win=3))["reasons"][0] == (
+        "only 3 test thoughts compared with a usable vote; promotion needs 100")
+    summary = compare.summarize(items(win=99, failed=2))
+    assert (summary["thoughts"], summary["compared"]) == (101, 99)
 
 
 def test_a_new_hard_check_failure_blocks_promotion():

@@ -18,6 +18,7 @@ import argparse
 import gc
 import hashlib
 import json
+import shutil
 import sys
 from collections import Counter
 from collections.abc import Callable
@@ -155,7 +156,9 @@ def summarize(items: list[dict]) -> dict:
     decided = votes[judge.WIN] + votes[judge.LOSS]
     new_failures = Counter(check for item in items for check in item["new_failures"])
     return {
-        "compared": len(items),
+        # Thoughts with a usable vote; failed judge calls don't count.
+        "compared": len(items) - votes[judge.FAILED],
+        "thoughts": len(items),
         "votes": {outcome: votes[outcome] for outcome in
                   (judge.WIN, judge.LOSS, judge.TIE, judge.SAME, judge.SPLIT, judge.FAILED)},
         "decided": decided,
@@ -176,7 +179,7 @@ def summarize(items: list[dict]) -> dict:
 
 def decide(items: list[dict]) -> dict:
     """The promotion rule, from the per-thought results: at least
-    MIN_COMPARED thoughts compared, at least MIN_WIN_PERCENT of the decided
+    MIN_COMPARED thoughts compared with a usable vote, at least MIN_WIN_PERCENT of the decided
     votes won (ties, identical outputs, order disagreements and failed
     calls don't count), and no hard check the candidate fails on a thought
     where the incumbent passed it."""
@@ -184,7 +187,8 @@ def decide(items: list[dict]) -> dict:
     wins, decided = summary["votes"][judge.WIN], summary["decided"]
     reasons = []
     if summary["compared"] < MIN_COMPARED:
-        reasons.append(f"only {summary['compared']} test thoughts compared; promotion needs {MIN_COMPARED}")
+        reasons.append(f"only {summary['compared']} test thoughts compared with a usable vote; "
+                       f"promotion needs {MIN_COMPARED}")
     if decided == 0:
         reasons.append("no decided votes")
     elif wins * 100 < MIN_WIN_PERCENT * decided:
@@ -250,7 +254,8 @@ def store(path: Path, model_id: str, data: dict) -> None:
 def print_summary(data: dict) -> None:
     s, d = data["summary"], data["decision"]
     v = s["votes"]
-    print(f"{data['candidate']['id']} vs {data['incumbent']['id']} on {s['compared']} frozen test thoughts")
+    print(f"{data['candidate']['id']} vs {data['incumbent']['id']} on {s['thoughts']} frozen test thoughts "
+          f"({s['compared']} with a usable vote)")
     print(f"Votes:       {v['win']} won, {v['loss']} lost ({v['tie']} tie, {v['same']} same output, "
           f"{v['split']} order disagreed, {v['failed']} failed)"
           + (f"; win rate {100 * s['win_rate']:.1f}%" if s["win_rate"] is not None else ""))
@@ -289,6 +294,8 @@ def register(commands) -> None:
 
 @reports_errors
 def run(args) -> int:
+    if shutil.which(args.teacher) is None:
+        raise ModelError(f"`{args.teacher}` isn't on PATH, so it can't judge; nothing was loaded")
     log = lambda line: print(line, file=sys.stderr)  # noqa: E731
     path = getattr(args, "db", None) or db.DEFAULT_PATH
     terms = vocab.load_terms(args.vocabulary)[: cleanup_prompt.load()["vocabulary_limit"]]

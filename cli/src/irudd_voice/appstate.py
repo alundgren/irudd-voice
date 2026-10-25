@@ -24,13 +24,14 @@ UNLOAD_UNTIL = "cleanup.unload_until"
 LOADED_MODEL = "cleanup.loaded_model"
 STATUS = "cleanup.status"
 STATUS_AT = "cleanup.status_at"
+CHECKED_AT = "cleanup.checked_at"
 UNLOADED_FOR_TRAINING = "unloaded-for-training"
 
 LEASE_SECONDS = 120
 REFRESH_SECONDS = 30
 CONFIRM_SECONDS = 60
-# A status older than this, which didn't change while we waited, means the
-# app isn't running.
+# A heartbeat older than this, which didn't change while we waited, means
+# the app isn't running.
 STALE_SECONDS = 120
 
 
@@ -147,28 +148,28 @@ class UnloadLease:
         """Waits for the app to confirm it unloaded its model (shared/app-state.md,
         "Starting training"). Returns why it's safe to go on, or raises AppBusy.
 
-        `cleanup.status_at` is when the status last changed, not a heartbeat:
-        a running app that loaded its model hours ago has an old one too. So
-        an old status only counts as "the app isn't running" when it stays
-        unchanged for the whole wait; a running app checks the lease at idle
-        (at least every 10 s) and would have answered.
+        The heartbeat is `cleanup.checked_at`, which a running app writes at
+        least every 10 s, or `cleanup.status_at` from an app that doesn't
+        write it yet. It only counts as "the app isn't running" when it's
+        older than `stale` and stays unchanged for the whole wait: a running
+        app that loaded its model hours ago has an old `status_at`, but it
+        checks the lease at idle and would have answered.
         """
         timeout = CONFIRM_SECONDS if timeout is None else timeout
         stale = STALE_SECONDS if stale is None else stale
         con = db.connect(self.path)
         try:
             deadline = clock() + timeout
-            first_at = read(con, STATUS_AT)
+            first_beat = read(con, CHECKED_AT) or read(con, STATUS_AT)
             while True:
-                status, status_at = read(con, STATUS), read(con, STATUS_AT)
+                status, beat = read(con, STATUS), read(con, CHECKED_AT) or read(con, STATUS_AT)
                 if status == UNLOADED_FOR_TRAINING:
                     return "the app unloaded its model"
                 if status is None:
                     return "the app has never loaded a cleanup model"
                 if clock() >= deadline:
-                    changed_at = parse_iso(status_at)
-                    if status_at == first_at and (changed_at is None
-                                                  or (now() - changed_at).total_seconds() > stale):
+                    beat_at = parse_iso(beat)
+                    if beat == first_beat and (beat_at is None or (now() - beat_at).total_seconds() > stale):
                         return "the app isn't running"
                     raise AppBusy(f"the app is running but didn't unload its model within {timeout:.0f} s "
                                   f"(its status is {status!r}). Wait until no thought is in progress and try "

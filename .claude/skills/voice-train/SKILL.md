@@ -87,3 +87,12 @@ uv run irudd-voice promote <model_id>
 
 It says whether the app has loaded the new model. To undo:
 `uv run irudd-voice rollback`.
+
+## 8. Clean up
+
+The dataset folder holds the user's text. Delete it when the run is over,
+whatever the outcome:
+
+```sh
+rm -rf "$TMPDIR/voice-dataset"
+```

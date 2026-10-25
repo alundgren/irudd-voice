@@ -143,7 +143,8 @@ uv run irudd-voice models status
 
 **`train`** always starts again from the candidate's base weights (the
 active model's candidate by default, else `gemma-4-e2b`) and trains LoRA on
-a `dataset build` folder (built now when `--dataset` is missing): last 16
+a `dataset build` folder (built in a temporary folder, deleted afterwards, when `--dataset` is
+missing): last 16
 layers, batch 1, gradient checkpointing, about two passes over the training
 examples (100 to 1000 steps). It runs at low priority (nice 10 and
 `taskpolicy -b`). The result is `<candidate>-ft-<date>-<n>/` in the models
@@ -171,7 +172,8 @@ like a label call (see above). The report goes into the candidate's
 **`promote`** refuses unless the report still matches: the same candidate
 and incumbent folders (manifest hashes), the candidate's dataset, the frozen
 test thoughts, the cleanup prompt, hard checks, judge prompt and vocabulary.
-It then needs at least 100 compared thoughts, at least 55% wins among the
+It then needs at least 100 compared thoughts with a usable vote (failed judge
+calls don't count), at least 55% wins among the
 decided votes (ties, identical outputs, order disagreements and failed calls
 don't count), and no hard check the candidate fails on a thought where the
 incumbent passed it. It changes `active_model` in one transaction (the old

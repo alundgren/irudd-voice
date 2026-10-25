@@ -187,13 +187,19 @@ public actor ChunkStore {
     }
 
     /// Deletes every recording, transcript and label, then shrinks the file.
-    /// Trained models are kept.
+    /// Trained models are kept, but the per-thought items of their eval
+    /// reports go: they hold model outputs (and raw text where a check
+    /// failed). The summary Settings shows stays.
     public func deleteAllRecordings() throws {
         try db.transaction {
             try db.execute("DELETE FROM events")
             try db.execute("DELETE FROM labels")
             try db.execute("DELETE FROM dataset_days")
             try db.execute("DELETE FROM chunks")
+            try db.execute("""
+                UPDATE models SET eval_report_json = json_remove(eval_report_json, '$.items')
+                WHERE eval_report_json IS NOT NULL
+                """)
         }
         try db.execute("VACUUM")
         try db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
