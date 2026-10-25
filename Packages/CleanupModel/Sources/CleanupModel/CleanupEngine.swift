@@ -86,11 +86,11 @@ public actor CleanupEngine {
         let context = try await LLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
         let loadTime = clock.now - start
 
-        var stops = context.configuration.eosTokenIds
+        var stops = Self.configStopTokens(folder: folder)
         if let eos = context.tokenizer.eosTokenId {
             stops.insert(eos)
         }
-        for token in context.configuration.extraEOSTokens.union(Self.endOfTurnTokens) {
+        for token in Self.endOfTurnTokens {
             // Only tokens really in the vocabulary: an unknown one maps to <unk>.
             if let id = context.tokenizer.convertTokenToId(token), context.tokenizer.convertIdToToken(id) == token {
                 stops.insert(id)
@@ -122,9 +122,7 @@ public actor CleanupEngine {
     }
 
     /// Greedy decoding with the chat template and `chat_template_options`,
-    /// stopping at an end-of-turn/eos token or `max_tokens`. Matches Python
-    /// mlx-lm's `generate_step`: the prompt minus its last token is prefilled
-    /// in steps of 2048, then decoding starts from the last token.
+    /// stopping at an end-of-turn/eos token or `max_tokens`.
     public func generate(messages: [ChatMessage], maxTokens: Int? = nil) throws -> GenerationResult {
         guard let context else { throw CleanupEngineError.notLoaded }
         let limit = maxTokens ?? prompt.generation.maxTokens
@@ -134,6 +132,11 @@ public actor CleanupEngine {
             additionalContext: prompt.templateContext)
 
         var parameters = GenerateParameters(maxTokens: limit, temperature: 0)
+        // Prompts up to 2048 tokens go through in one forward pass. Python
+        // mlx-lm runs all but the last token first, then the last one; that
+        // split was tried here and matched Python's tokens less often (75
+        // vs 77 of 80 parity inputs), as MLX 0.32.2 (mlx-swift) and 0.32.4
+        // (Python) already round differently.
         parameters.prefill = PrefillParameters(stepSize: 2048, chunking: .remainder)
         let clock = ContinuousClock()
         let start = clock.now
@@ -155,6 +158,21 @@ public actor CleanupEngine {
             stopToken: stopToken,
             promptSeconds: iterator.promptPrefillTime,
             generateSeconds: total.seconds - iterator.promptPrefillTime)
+    }
+
+    /// The eos IDs Python mlx-lm stops at: the top-level `eos_token_id` of
+    /// config.json, replaced by generation_config.json's when that has one.
+    /// mlx-swift-lm also reads `text_config.eos_token_id` (Qwen3.5's
+    /// <|endoftext|>); mlx-lm doesn't, so neither do we, to give the same tokens.
+    static func configStopTokens(folder: URL) -> Set<Int> {
+        func eos(_ name: String) -> Set<Int>? {
+            guard let data = try? Data(contentsOf: folder.appendingPathComponent(name)),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            if let id = object["eos_token_id"] as? Int { return [id] }
+            if let ids = object["eos_token_id"] as? [Int], !ids.isEmpty { return Set(ids) }
+            return nil
+        }
+        return eos("generation_config.json") ?? eos("config.json") ?? []
     }
 
     /// Decodes token IDs, for showing where two runs differ.

@@ -213,6 +213,7 @@ func compare(_ options: Options) async throws -> Bool {
         ok = false
     }
     let swiftItems = Dictionary(swift.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    var identical = 0
     for item in reference.items {
         guard let other = swiftItems[item.id] else {
             print("\(item.id): missing from the Swift file")
@@ -233,13 +234,17 @@ func compare(_ options: Options) async throws -> Bool {
             ok = false
             break
         }
-        if item.prompt_token_ids == other.prompt_token_ids && item.generated_token_ids == other.generated_token_ids
-            && item.stop_token_id != other.stop_token_id {
-            print("\(item.id): stop token differs: python \(show(item.stop_token_id)), swift \(show(other.stop_token_id))")
-            ok = false
+        if item.prompt_token_ids == other.prompt_token_ids && item.generated_token_ids == other.generated_token_ids {
+            if item.stop_token_id == other.stop_token_id {
+                identical += 1
+            } else {
+                print("\(item.id): stop token differs: python \(show(item.stop_token_id)), swift \(show(other.stop_token_id))")
+                ok = false
+            }
         }
     }
-    print(ok ? "OK: \(reference.items.count) inputs, identical tokens (\(reference.model_id))" : "MISMATCH (\(reference.model_id))")
+    print(ok ? "OK: \(reference.items.count) inputs, identical tokens (\(reference.model_id))"
+        : "MISMATCH: \(identical) of \(reference.items.count) inputs identical (\(reference.model_id))")
     return ok
 }
 
