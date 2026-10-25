@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter
 from dataclasses import dataclass
 
 # The order failures are reported in. Fixtures compare lists exactly.
@@ -52,10 +51,18 @@ FUNCTION_WORDS = {
     "if", "do", "does", "please", "also", "s", "i", "you", "we",
 }
 
-QUESTION_STARTS = {
-    "can", "could", "would", "should", "what", "why", "how", "when", "where", "who",
-    "which", "is", "are", "does", "did", "have", "has", "shall", "may",
+# A spoken question has question word order: a helper verb then a pronoun
+# ("can you", "is it"), or a question word then a helper verb ("why is",
+# "how do"). "when the tests pass, merge it" is not a question.
+HELPER_VERBS = {
+    "can", "could", "would", "should", "is", "are", "was", "were", "do", "does", "did",
+    "have", "has", "will", "shall", "may",
 }
+PRONOUNS = {"you", "i", "we", "it", "this", "that", "there", "they", "he", "she"}
+QUESTION_WORDS = {"what", "why", "how", "when", "where", "which", "who"}
+
+# Hedges a cleanup may drop; not counted as content for `dropped`.
+HEDGES = {"maybe", "probably", "perhaps", "wondering", "whether", "trying", "say", "saying", "guess", "really"}
 
 CONTRACTIONS = {
     "don't": "do not", "doesn't": "does not", "didn't": "did not", "isn't": "is not",
@@ -174,8 +181,8 @@ def numbers_in(tokens: list[str]) -> list[int]:
             found.extend(int(run) for run in re.findall(r"[0-9]+", token))
         elif token in NUMBER_WORDS and not (token == "oh" and current is None and not total):
             value = NUMBER_WORDS[token]
-            if current is not None and 20 <= current < 100 and current % 10 == 0 and value < 10:
-                current += value  # "twenty five"
+            if current is not None and current % 100 >= 20 and current % 10 == 0 and value < 10:
+                current += value  # "twenty five", "two hundred twenty five"
             elif current is not None and current % 100 == 0 and current >= 100 and value < 100:
                 current += value  # "one hundred five"
             elif current is None and total and value < 1000:
@@ -204,34 +211,32 @@ def numbers_in(tokens: list[str]) -> list[int]:
     return found
 
 
-def _covered(target: Counter[int], available: list[int]) -> tuple[Counter[int], list[int]]:
-    """Matches each wanted number against `available`, either directly or as
-    the digits of consecutive available numbers joined ("eight zero eight
-    zero" or "eighty eighty" = 8080). Returns (unmatched wanted, leftover available)."""
-    left = list(available)
-    missing: Counter[int] = Counter()
-    for number, count in target.items():
-        for _ in range(count):
-            if number in left:
-                left.remove(number)
-                continue
-            text = str(number)
-            matched = False
-            for start in range(len(left)):
-                joined = ""
-                for end in range(start, min(start + 6, len(left))):
-                    joined += str(left[end])
-                    if joined == text:
-                        del left[start:end + 1]
-                        matched = True
-                        break
-                    if not text.startswith(joined):
-                        break
-                if matched:
-                    break
-            if not matched:
-                missing[number] += 1
-    return missing, left
+def match_numbers(kept: list[int], out: list[int]) -> tuple[list[int], list[int]]:
+    """Pairs the speaker's kept numbers with the output's numbers. Walking the
+    kept numbers in order, each one is matched to an equal output number, or
+    else a run of 2 to 6 consecutive kept numbers is matched to an output
+    number whose digits are those numbers joined ("eight zero eight zero" or
+    "eighty eighty" = 8080). Both sides are used up whole. Returns (kept
+    numbers left unmatched, output numbers left unmatched)."""
+    left = list(out)
+    unmatched: list[int] = []
+    index = 0
+    while index < len(kept):
+        if kept[index] in left:
+            left.remove(kept[index])
+            index += 1
+            continue
+        joined = str(kept[index])
+        for end in range(index + 1, min(index + 6, len(kept))):
+            joined += str(kept[end])
+            if int(joined) in left:
+                left.remove(int(joined))
+                index = end + 1
+                break
+        else:
+            unmatched.append(kept[index])
+            index += 1
+    return unmatched, left
 
 
 # ---- Corrections -------------------------------------------------------------
@@ -308,9 +313,13 @@ def check(
     ignored = replaced | markers
 
     # dropped: nothing (or too little) left of what the speaker kept.
+    filler_pairs = {
+        i + k for i in range(len(raw) - 1) if f"{raw[i]} {raw[i + 1]}" in FILLERS for k in (0, 1)
+    }
     content = [
         w for i, w in enumerate(raw)
-        if i not in ignored and w not in FUNCTION_WORDS and w not in FILLERS
+        if i not in ignored and i not in filler_pairs and w not in FUNCTION_WORDS
+        and w not in FILLERS and w not in HEDGES
         and _kind(w) != "number" and w not in SCALES  # numbers are checked on their own
     ]
     out_stems = {stem(w) for w in out_expanded}
@@ -335,17 +344,18 @@ def check(
         failures.add("answers")
 
     # question: a spoken question must stay a question.
-    raw_start = strip_fillers(raw)
-    if raw_start and raw_start[0] in QUESTION_STARTS and out and not cleaned.rstrip().endswith("?"):
+    head = strip_fillers(raw)[:2]
+    asks = len(head) == 2 and (
+        (head[0] in HELPER_VERBS and head[1] in PRONOUNS)
+        or (head[0] in QUESTION_WORDS and head[1] in HELPER_VERBS)
+    )
+    if asks and out and not cleaned.rstrip().endswith("?"):
         failures.add("question")
 
-    # numbers: nothing new, and every number the speaker kept, as many times.
-    raw_numbers = numbers_in(raw)
-    out_numbers = numbers_in(out)
-    new, _ = _covered(Counter(out_numbers), raw_numbers)
+    # numbers: exactly the numbers the speaker kept (corrected-away ones don't count).
     kept_numbers = numbers_in([w for i, w in enumerate(raw) if i not in ignored])
-    missing, _ = _covered(Counter(kept_numbers), _expand_for_join(out_numbers))
-    if new or missing:
+    missing, extra = match_numbers(kept_numbers, numbers_in(out))
+    if missing or extra:
         failures.add("numbers")
 
     # negation: the negations the speaker kept, no fewer and no more.
@@ -377,17 +387,3 @@ def check(
         break
 
     return [name for name in CHECK_ORDER if name in failures]
-
-
-def _expand_for_join(out_numbers: list[int]) -> list[int]:
-    """For the "kept" direction a joined output number ("8080") covers
-    several spoken numbers ("eight zero eight zero"): offer its digits as
-    pieces too."""
-    pieces = list(out_numbers)
-    for number in out_numbers:
-        text = str(number)
-        if len(text) > 1:
-            pieces.extend(int(c) for c in text)
-            if len(text) % 2 == 0:
-                pieces.extend(int(text[i:i + 2]) for i in range(0, len(text), 2))
-    return pieces

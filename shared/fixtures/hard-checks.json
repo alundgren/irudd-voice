@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "about": "Every hard-check implementation (Swift app, Python CLI) must give exactly these results, failures in the order dropped, answers, question, numbers, negation, identifiers, new_words. 'replies' test reading the model's raw reply (hit_limit = generation stopped at max_tokens); 'checks' test the checks.",
   "replies": [
     {
@@ -441,6 +441,123 @@
       "name": "do not is not a question",
       "transcript": "do not touch the retries",
       "cleaned": "Don't touch the retries.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "dropped count hidden in a longer number",
+      "transcript": "retry 3 times with a 30 second timeout",
+      "cleaned": "Retry with a 30 second timeout.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "dropped wait hidden in a port",
+      "transcript": "wait 2 seconds then retry on port 3002",
+      "cleaned": "Wait, then retry on port 3002.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "dropped workers hidden in a port",
+      "transcript": "use 5 workers and port 8050",
+      "cleaned": "Use workers and port 8050.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "hundreds, tens and units",
+      "transcript": "add two hundred twenty five rows",
+      "cleaned": "Add 225 rows.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "thousands, hundreds, tens and units",
+      "transcript": "import one thousand two hundred thirty four rows",
+      "cleaned": "Import 1234 rows.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "hundreds and tens with and",
+      "transcript": "make it three hundred and forty two",
+      "cleaned": "Make it 342.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "corrected number kept beside its replacement",
+      "transcript": "change the timeout to fifteen seconds no fifty seconds",
+      "cleaned": "Change the timeout to 15 seconds and 50 seconds.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "corrected port kept beside its replacement",
+      "transcript": "use port 3000 no 3001",
+      "cleaned": "Use port 3000 and 3001.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "when clause is not a question",
+      "transcript": "when the tests pass merge it",
+      "cleaned": "When the tests pass, merge it.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "have a look is not a question",
+      "transcript": "have a look at the logs",
+      "cleaned": "Have a look at the logs.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "what I want is not a question",
+      "transcript": "what I want is a faster build",
+      "cleaned": "What I want is a faster build.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "where it says is not a question",
+      "transcript": "where it says foo change it to bar",
+      "cleaned": "Where it says foo, change it to bar.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "why is is a question",
+      "transcript": "why is the build slow",
+      "cleaned": "Why is the build slow.",
+      "vocabulary": [],
+      "failures": [
+        "question"
+      ]
+    },
+    {
+      "name": "do you is a question",
+      "transcript": "do you know why it fails",
+      "cleaned": "Do you know why it fails?",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "hedges dropped",
+      "transcript": "i was wondering whether you could maybe kind of look at the tests",
+      "cleaned": "Could you look at the tests?",
       "vocabulary": [],
       "failures": []
     }

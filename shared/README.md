@@ -77,28 +77,57 @@ appears before it, or the first word after it is a number and a number
 appears before it. If it is, the words before are *replaced* and the marker
 words are *markers*. Both are *ignored* below.
 
-**Numbers.** Digits, digits inside a word (`T3` → 3), and spelled-out
-numbers. Spelled-out numbers include tens plus units (`twenty five`),
-hundreds (`one hundred and five`), `a hundred`, and thousands and millions
-that keep collecting smaller parts (`one thousand two hundred` → 1200). A
-standalone `oh` is not zero. An output number may also equal the digits of
-up to 6 consecutive transcript numbers joined (`eight zero eight zero` or
-`eighty eighty` → 8080, `twenty twenty six` → 2026).
+**Numbers** (`numbers_in`, applied to a word list). Walk the words keeping
+`total` (completed thousands/millions) and `current` (the part below the
+current scale, or none). "Flush" appends `total + (current or 0)` if either
+is set, then resets both.
+
+- A word of digits: flush, then append its value.
+- A word with digits inside (`t3`, `v2`): flush, then append each digit run.
+- A number word (`NUMBER_WORDS`; `oh` only when `current` or `total` is set):
+  - if `current` is set, `current % 100 >= 20`, `current % 10 == 0` and the
+    value is below 10: add it (`twenty five`, `two hundred twenty five`);
+  - else if `current` is set, `current >= 100`, `current % 100 == 0` and the
+    value is below 100: add it (`two hundred twenty`);
+  - else if `current` is not set, `total` is set and the value is below 1000:
+    `current` = value (`one thousand two …`);
+  - else if `current` is set: flush, then `current` = value;
+  - else `current` = value.
+- A scale word (`hundred`, `thousand`, `million`): if nothing is set and the
+  previous word is `a` or `one`, `current` = 1. If still nothing is set,
+  ignore the word. `hundred`: `current` = (`current` or 1) × 100. Otherwise
+  `total` += (`current` or 1) × scale, and `current` is unset.
+- `and` while something is set: skip it.
+- Any other word: flush.
+- Flush at the end.
+
+**Matching numbers** (`match_numbers(kept, out)`). Walk the kept numbers in
+order. If the number is in the remaining output numbers, remove it there and
+move on. Otherwise try runs of the next 2–6 kept numbers. The first run whose
+decimal digits joined equal a remaining output number uses up both. If none
+matches, the kept number is unmatched. Output numbers never split.
+
+**Fillers.** `FILLERS` words anywhere, and two-word fillers (`you know`,
+`kind of`, …) wherever both words appear together, don't count as content.
+`strip_fillers` removes them from the start only.
 
 The checks:
 
 - `dropped`: the transcript has content words (not ignored, not joining
-  words, not fillers, not numbers) and the output has no words. Or there
+  words, not fillers, not hedges, not number or scale words) and the output
+  has no words. Or there
   are at least 4 content words and fewer than half appear in the output
   (by stem, or inside the output with separators removed).
 - `answers`: after removing leading fillers, the output starts with an
   answer opener (`ANSWER_OPENERS`) that isn't among the transcript's first 4
   words after its own fillers. Or the output has more than
   `max_output_words_ratio` × transcript words + `max_output_words_slack` words.
-- `question`: after fillers, the transcript starts with a question word
-  (`QUESTION_STARTS`; not `do` or `will`) and the output doesn't end with `?`.
-- `numbers`: the output has a number the transcript can't account for, or
-  a number the speaker kept (not ignored) is missing, counting repeats.
+- `question`: after leading fillers, the transcript's first two words are a
+  helper verb then a pronoun (`can you`, `is it`), or a question word then
+  a helper verb (`why is`, `how do`), and the output doesn't end with `?`.
+- `numbers`: `match_numbers(numbers in the transcript's non-ignored words,
+  numbers in the output)` leaves anything unmatched on either side. So a
+  corrected-away number in the output fails, as does a dropped or changed one.
 - `negation`: the number of negation words (`NEGATIONS`, including `no`)
   differs between the output and the transcript's non-ignored words.
 - `identifiers`: an identifier written in the transcript (dotted, slashed,
