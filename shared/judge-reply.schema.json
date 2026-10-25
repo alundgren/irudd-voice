@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "properties": {
+    "better": {"type": "string", "enum": ["A", "B", "tie"]}
+  },
+  "required": ["better"],
+  "additionalProperties": false
+}

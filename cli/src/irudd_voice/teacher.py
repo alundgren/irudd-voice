@@ -1,6 +1,7 @@
 """Teacher runs: ask Claude Code or Codex what a transcript should have been.
 
-Each call runs from a fresh, empty temporary folder with tools, MCP servers,
+`call` is the contained runner; `ask` uses it for labels and judge.py for
+the blind votes in `eval-compare`. Each call runs from a fresh, empty temporary folder with tools, MCP servers,
 hooks and session saving off. The teacher sees only the transcript and the
 vocabulary. The folder name starts with TEACHER_DIR_PREFIX and the prompt
 starts with the teacher prompt's marker, so `irudd-voice vocab` can skip any
@@ -17,6 +18,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -83,7 +85,7 @@ def messages(transcript: str, terms: list[str] | tuple[str, ...] = (), teacher_p
 
 def valid_reply(value: object, schema: dict) -> bool:
     """Checks a parsed reply against the reply schema. Handles what
-    teacher-reply.schema.json uses: an object, typed properties, required
+    the reply schemas use: an object, typed properties, enums, required
     keys and no extra keys."""
     if schema.get("type") != "object" or not isinstance(value, dict):
         return False
@@ -93,14 +95,16 @@ def valid_reply(value: object, schema: dict) -> bool:
     if schema.get("additionalProperties") is False and set(value) - set(properties):
         return False
     types = {"string": str, "object": dict, "array": list, "boolean": bool}
-    return all(isinstance(value[key], types[spec["type"]]) for key, spec in properties.items() if key in value)
+    return all(isinstance(value[key], types[spec["type"]]) and value[key] in spec.get("enum", [value[key]])
+               for key, spec in properties.items() if key in value)
 
 
 @dataclass
 class Answer:
-    """What one teacher call produced. `cleaned` is None when the reply
-    can't be used; `failure` then says why. CALL_FAILURES mean the call
-    itself failed, so there is no label to judge."""
+    """What one teacher call produced. `cleaned` is the value read from the
+    reply (the label, or the judge's pick), None when the reply can't be
+    used; `failure` then says why. CALL_FAILURES mean the call itself
+    failed, so there is no reply to judge."""
 
     cleaned: str | None
     failure: str | None
@@ -111,9 +115,14 @@ class Answer:
     detail: str | None = None
 
 
-def read_cleaned(text: str | None, structured: object = None) -> tuple[str | None, str | None]:
-    """The label from a teacher's reply text (JSON, optionally in a ```
-    fence) or from its already-parsed structured output."""
+# Reads a reply: (reply text, already-parsed structured output) ->
+# (value, None) or (None, failure).
+Reader = Callable[[str | None, object], tuple[str | None, str | None]]
+
+
+def read_object(text: str | None, structured: object, schema_file: Path) -> dict | None:
+    """The reply object from its text (JSON, optionally in a ``` fence) or
+    the already-parsed structured output; None unless it fits the schema."""
     value = structured
     # The same strict JSON as the app's reply reading (shared/README.md), so a
     # lone surrogate or a repeated key is rejected instead of stored.
@@ -127,8 +136,14 @@ def read_cleaned(text: str | None, structured: object = None) -> tuple[str | Non
         else:
             hardchecks.check_strict(value)
     except ValueError:  # includes json.JSONDecodeError
-        return None, "malformed"
-    if not valid_reply(value, json.loads(schema_path().read_text())):
+        return None
+    return value if valid_reply(value, json.loads(schema_file.read_text())) else None
+
+
+def read_cleaned(text: str | None, structured: object = None) -> tuple[str | None, str | None]:
+    """The label from a teacher's reply."""
+    value = read_object(text, structured, schema_path())
+    if value is None:
         return None, "malformed"
     cleaned = value["cleaned"].strip()
     return (cleaned, None) if cleaned else (None, "empty")
@@ -172,7 +187,7 @@ def codex_command(schema_file: Path, model: str | None = None, executable: str =
     return command + ["-"]  # the prompt comes on stdin
 
 
-def read_claude(stdout: str) -> Answer:
+def read_claude(stdout: str, read: Reader = read_cleaned) -> Answer:
     """Claude's --output-format json: one result object."""
     try:
         result = json.loads(stdout)
@@ -192,11 +207,11 @@ def read_claude(stdout: str) -> Answer:
     if result.get("is_error") or result.get("subtype") not in (None, "success"):
         answer.failure = "teacher_error"
         return answer
-    answer.cleaned, answer.failure = read_cleaned(result.get("result"), result.get("structured_output"))
+    answer.cleaned, answer.failure = read(result.get("result"), result.get("structured_output"))
     return answer
 
 
-def read_codex(stdout: str, model: str | None = None) -> Answer:
+def read_codex(stdout: str, model: str | None = None, read: Reader = read_cleaned) -> Answer:
     """Codex's --json: one event per line. The last agent message is the
     reply; any item outside CODEX_ANSWER_ITEMS rejects the label."""
     answer = Answer(None, None, model=model)
@@ -228,14 +243,16 @@ def read_codex(stdout: str, model: str | None = None) -> Answer:
     elif failed or last_message is None:
         answer.failure = "teacher_error"
     else:
-        answer.cleaned, answer.failure = read_cleaned(last_message)
+        answer.cleaned, answer.failure = read(last_message, None)
     return answer
 
 
-def command(teacher: str, system: str, model: str | None = None, executable: str | None = None) -> list[str]:
+def command(teacher: str, system: str, model: str | None = None, executable: str | None = None,
+            schema_file: Path | None = None) -> list[str]:
+    schema_file = schema_file or schema_path()
     if teacher == "claude":
-        return claude_command(system, json.loads(schema_path().read_text()), model, executable or "claude")
-    return codex_command(schema_path(), model, executable or "codex")
+        return claude_command(system, json.loads(schema_file.read_text()), model, executable or "claude")
+    return codex_command(schema_file, model, executable or "codex")
 
 
 def _kill_group(process: subprocess.Popen) -> None:
@@ -247,9 +264,17 @@ def _kill_group(process: subprocess.Popen) -> None:
 
 def ask(teacher: str, transcript: str, terms: list[str] | tuple[str, ...] = (), model: str | None = None,
         timeout: float | None = None) -> Answer:
-    """One contained teacher call."""
-    timeout = timeout or TIMEOUT_SECONDS
+    """One label."""
     system, user = messages(transcript, terms)
+    return call(teacher, system, user, schema_path(), read_cleaned, model, timeout)
+
+
+def call(teacher: str, system: str, user: str, schema_file: Path, read: Reader, model: str | None = None,
+         timeout: float | None = None) -> Answer:
+    """One contained teacher call: `user` must start with the teacher
+    prompt's marker; the reply has to fit `schema_file` and is read with
+    `read`."""
+    timeout = timeout or TIMEOUT_SECONDS
     executable = shutil.which(teacher)
     if executable is None:
         raise FileNotFoundError(f"`{teacher}` isn't on PATH.")
@@ -258,7 +283,7 @@ def ask(teacher: str, transcript: str, terms: list[str] | tuple[str, ...] = (), 
         stdin = user if teacher == "claude" else system + "\n\n" + user
         # claude and codex are shims that start the real CLI as a child, so
         # each call gets its own process group and a timeout kills all of it.
-        process = subprocess.Popen(command(teacher, system, model, executable), stdin=subprocess.PIPE,
+        process = subprocess.Popen(command(teacher, system, model, executable, schema_file), stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=folder,
                                    start_new_session=True)
         try:
@@ -271,7 +296,7 @@ def ask(teacher: str, transcript: str, terms: list[str] | tuple[str, ...] = (), 
             # session), so stop the teacher before passing it on.
             _kill_group(process)
             raise
-    answer = read_claude(stdout) if teacher == "claude" else read_codex(stdout, model)
+    answer = read_claude(stdout, read) if teacher == "claude" else read_codex(stdout, model, read)
     if process.returncode != 0 and answer.failure is None:
         answer.cleaned, answer.failure = None, "teacher_error"
     if answer.failure == "teacher_error":
