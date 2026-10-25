@@ -6,7 +6,9 @@ XPC helper: CleanupEngine for generation, then the Swift reply parser and
 hard checks. mlx-swift-lm 3.32.3 (MLX core 0.32.2), swift-transformers
 1.3.5, the base 4-bit model folders from `irudd-voice models prepare`, and
 prompt `cleanup-v1`. One model job ran at a time; other agents' builds may
-have been running.
+have been running. Speed and evals were measured before the deadline check
+and the `<|endoftext|>` stop token were added; neither changes a normal
+cleanup's work.
 
 ## Speed and memory
 
@@ -53,25 +55,37 @@ entry in the vocabulary would allow.
 ## Parity with Python mlx-lm
 
 `tests/model-parity.sh` on the 20 inputs in `evals/parity.jsonl`, greedy, up
-to 96 new tokens, against the Python references (mlx 0.32.4, mlx-lm 0.32.2):
+to 96 new tokens, against the Python references (mlx 0.32.4, mlx-lm 0.32.2,
+regenerated 2026-10-25 12:16Z with `<|endoftext|>` as a Qwen stop token).
+The strict result is identical tokens. The tie-aware result
+(`tests/parity-gaps.py`) asks for identical prompt tokens and, where the
+generated tokens differ, a gap of at most 0.5 between Python's logits for
+its own token and for Swift's token at that step. Whether the tie-aware rule
+is acceptable is a decision for the project owner.
 
-| Model | Prompt tokens identical | Generated tokens identical |
-| --- | --- | --- |
-| qwen3.5-2b-base-q4 | 20/20 | 19/20 (p08 differs at token 16) |
-| gemma-4-e2b-base-q4 | 20/20 | 18/20 (p07 at token 11, p13 at token 16) |
-| qwen3.5-4b-base-q4 | 20/20 | 20/20 |
-| qwen3.5-2b-tiny-20261025 (tiny LoRA) | 20/20 | 20/20 |
+| Model | Prompt tokens identical | Strict: generated tokens identical | Tie-aware |
+| --- | --- | --- | --- |
+| qwen3.5-2b-base-q4 | 20/20 | 19/20 (p08 differs at token 16) | pass (gap 0.125) |
+| gemma-4-e2b-base-q4 | 20/20 | 18/20 (p07 at token 11, p13 at token 16) | pass (gaps 0.469, 0.281) |
+| qwen3.5-4b-base-q4 | 20/20 | 20/20 | pass |
+| qwen3.5-2b-tiny-20261025 | 20/20 | 20/20 | pass |
+| gemma-4-e2b-tiny-20261025 | 20/20 | 20/20 | pass |
+| qwen3.5-4b-tiny-20261025 | 20/20 | 20/20 | pass |
 
-Each difference is one near-tie between two tokens, after which the texts
-go their own way. Python's own logits at those steps:
+Each difference is one step where Swift picks another token, after which
+the texts go their own way. Python's logits at those steps:
 
-- qwen3.5-2b p08: " dot" 18.5, " Python" 18.5, " for" 18.375 (Swift picked
-  " for"; one bf16 step apart).
-- gemma p07: `"}` 7.19 vs `."` 6.72; p13: `"}` 7.84 vs `."` 7.56 (Swift
-  ended the sentence with a full stop).
+- qwen3.5-2b p08: " dot" 18.5, " Python" 18.5, " for" 18.375. Swift picked
+  " for", one bf16 step below.
+- gemma p07: `"}` 7.19 vs `."` 6.72 (gap 0.47); p13: `"}` 7.84 vs `."` 7.56
+  (gap 0.28). Swift ended the sentence with a full stop.
 
-MLX versions alone change such ties: Python mlx-lm with MLX 0.32.2 (the
-version mlx-swift 0.32.3 bundles) instead of 0.32.4 gives different tokens
-on 2 of these 80 inputs. Swift with prompts split the way mlx-lm splits them
-(all tokens but the last, then the last) matched 75 of 80; one forward pass,
-which the engine uses, matched 77.
+The Qwen case is a near-tie. The Gemma gaps are several bf16 steps, so
+mlx-swift-lm's Gemma 4 code and mlx-lm's round differently enough to
+flip choices that aren't ties: numeric sensitivity, not only ties. The MLX
+version doesn't explain it. Python mlx-lm with MLX 0.32.2 (the version
+mlx-swift 0.32.3 bundles) also matched Swift on only 77 of 80 outputs (the
+three base models and the first tiny model), so pinning MLX 0.32.2 wouldn't
+help. Feeding the prompt the way
+mlx-lm does (all tokens but the last, then the last) matched 75 of 80, so
+the engine keeps mlx-swift-lm's one forward pass.
