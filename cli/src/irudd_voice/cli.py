@@ -93,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     stats_parser = commands.add_parser("stats", help="what's been recorded so far")
     stats_parser.add_argument("--json", action="store_true", help="print JSON")
+    events_parser = commands.add_parser("events", help="the app's recent log lines")
+    events_parser.add_argument("-n", type=int, default=40, help="how many (default 40)")
     args = parser.parse_args(argv)
 
     try:
@@ -102,7 +104,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     with con:
-        if args.command == "stats":
+        if args.command == "events":
+            rows = con.execute(
+                "SELECT at, level, category, chunk_id, message FROM events ORDER BY id DESC LIMIT ?", (args.n,)
+            ).fetchall()
+            for at, level, category, chunk_id, message in reversed(rows):
+                chunk = f" #{chunk_id}" if chunk_id else ""
+                print(f"{at}  {level:<7} {category:<8}{chunk}  {message}")
+        elif args.command == "stats":
             result = stats(con, args.db)
             if args.json:
                 print(json.dumps(result, indent=2))

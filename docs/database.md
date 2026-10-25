@@ -13,6 +13,10 @@ One SQLite file holds everything the app records:
   isn't the version it knows, and says why (`cli/src/irudd_voice/db.py`).
 - Both sides use WAL and a 10 s busy timeout, and take the write lock up
   front (`BEGIN IMMEDIATE`), so app and CLI can write at the same time.
+- **Nothing stays pending.** Recognition gets 20 s plus the thought's
+  length. After that the row is marked `error` with the reason, and the
+  audio is kept. Rows left pending by a quit are recognised again from their
+  audio at the next launch.
 - **Audio is saved first.** When a thought ends, its audio is written as a
   `pending` row before recognition runs. The row then becomes `transcribed`
   or `error`. Audio stays in the database, nothing is deleted
@@ -28,6 +32,7 @@ One SQLite file holds everything the app records:
 | `dataset_days` | Which split (train, selection, test) each recording day belongs to; test days never move |
 | `models` | Trained cleanup models and their manifests and eval reports |
 | `active_model` | The one active model and the previous one, for rollback |
+| `events` | The app's log: saves, recognition results and timings, failures, mic changes. `irudd-voice events` prints it |
 | `app_state` | Small key/value settings shared by app and CLI |
 
 ### `chunks`

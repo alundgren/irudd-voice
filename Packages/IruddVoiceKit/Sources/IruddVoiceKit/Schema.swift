@@ -121,6 +121,16 @@ public enum Schema {
         changed_at TEXT NOT NULL
     );
 
+    CREATE TABLE events (
+        id INTEGER PRIMARY KEY,
+        at TEXT NOT NULL,
+        level TEXT NOT NULL CHECK (level IN ('info', 'warning', 'error')),
+        category TEXT NOT NULL,
+        message TEXT NOT NULL,
+        chunk_id INTEGER REFERENCES chunks (id) ON DELETE SET NULL
+    );
+    CREATE INDEX events_at ON events (at);
+
     CREATE TABLE app_state (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,

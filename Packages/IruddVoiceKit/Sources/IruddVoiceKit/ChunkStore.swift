@@ -158,6 +158,15 @@ public actor ChunkStore {
         try db.query("SELECT id FROM chunks WHERE status = 'pending' ORDER BY id").compactMap { $0[0].int }
     }
 
+    /// Writes a line to the `events` table. Never throws: logging must not
+    /// break the thing being logged.
+    public func log(_ level: LogLevel, _ category: String, _ message: String, chunkID: Int64? = nil) {
+        _ = try? db.query("INSERT INTO events (at, level, category, message, chunk_id) VALUES (?, ?, ?, ?, ?)", [
+            .text(Timestamps.string(Date())), .text(level.rawValue), .text(category), .text(message),
+            .optional(chunkID),
+        ])
+    }
+
     public func count() throws -> Int {
         Int(try db.query("SELECT COUNT(*) FROM chunks").first?.first?.int ?? 0)
     }
@@ -166,6 +175,7 @@ public actor ChunkStore {
     /// Trained models are kept.
     public func deleteAllRecordings() throws {
         try db.transaction {
+            try db.execute("DELETE FROM events")
             try db.execute("DELETE FROM labels")
             try db.execute("DELETE FROM dataset_days")
             try db.execute("DELETE FROM chunks")
@@ -223,6 +233,59 @@ public protocol ThoughtTranscription: Sendable {
     /// The final text for the audio up to `seconds` from the thought's
     /// first sample (the pre-roll included).
     func finish(through seconds: Double) async throws -> String
+    /// Stops recognition that has taken too long.
+    func cancel()
+}
+
+extension ThoughtTranscription {
+    public func cancel() {}
+}
+
+public enum LogLevel: String, Sendable {
+    case info, warning, error
+}
+
+/// Runs `operation`, but gives up after `limit` seconds even if the
+/// operation ignores cancellation (a task group would wait for it).
+func firstOf<T: Sendable>(limit: Double, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    let once = ResumeOnce<T>()
+    return try await withCheckedThrowingContinuation { continuation in
+        once.attach(continuation)
+        let work = Task {
+            do { once.resume(.success(try await operation())) } catch { once.resume(.failure(error)) }
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(limit))
+            if once.resume(.failure(TranscriptionTimeout(seconds: limit))) { work.cancel() }
+        }
+    }
+}
+
+final class ResumeOnce<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Error>?
+
+    func attach(_ continuation: CheckedContinuation<T, Error>) {
+        lock.withLock { self.continuation = continuation }
+    }
+
+    /// Returns true if this call was the one that resumed.
+    @discardableResult
+    func resume(_ result: Result<T, Error>) -> Bool {
+        let taken: CheckedContinuation<T, Error>? = lock.withLock {
+            defer { continuation = nil }
+            return continuation
+        }
+        taken?.resume(with: result)
+        return taken != nil
+    }
+}
+
+struct TranscriptionTimeout: Error, CustomStringConvertible {
+    let seconds: Double
+    var description: String {
+        "Speech recognition didn't finish within \(Int(seconds)) s, so it was stopped. The audio is kept."
+    }
 }
 
 /// The production save path: audio first, then text.
@@ -245,12 +308,19 @@ public struct SavedAudioTranscription: ThoughtTranscription {
     public func finish(through seconds: Double) async throws -> String {
         let session = make(sampleRate)
         session.append(samples)
-        return try await session.finish(through: seconds)
+        return try await withTaskCancellationHandler {
+            try await session.finish(through: seconds)
+        } onCancel: {
+            session.cancel()
+        }
     }
 }
 
 public struct ChunkRecorder: Sendable {
     public let store: ChunkStore
+    /// How long recognition may take after the audio is in: a fixed part
+    /// plus one second per second of audio. Nothing stays pending forever.
+    public var timeLimit: @Sendable (_ audioSeconds: Double) -> Double = { 20 + $0 }
 
     public init(store: ChunkStore) {
         self.store = store
@@ -264,39 +334,67 @@ public struct ChunkRecorder: Sendable {
                        saved: (@Sendable (Int64) -> Void)? = nil) async -> Int64? {
         let audio = AudioEncoding.encode(samples: thought.samples, sampleRate: thought.sampleRate)
         let durationMs = Int64((thought.duration * 1000).rounded())
-        guard let id = try? await store.insertPending(meta: meta, audio: audio, durationMs: durationMs) else {
+        let id: Int64
+        do {
+            id = try await store.insertPending(meta: meta, audio: audio, durationMs: durationMs)
+        } catch {
+            await store.log(.error, "save", "Couldn't save a \(durationMs) ms thought: \(error)")
             return nil
         }
+        await store.log(.info, "save", "Saved \(durationMs) ms of audio (\(audio.data.count) bytes \(audio.format)), "
+            + "started by \(thought.startReason.rawValue), ended by \(thought.endReason.rawValue)", chunkID: id)
         saved?(id)
         guard let transcription else {
             try? await store.markError(id: id, message: "No speech recognizer was running for this thought.")
+            await store.log(.warning, "speech", "No recognizer for this thought", chunkID: id)
             return id
         }
         await transcribe(id: id, transcription: transcription, through: thought.duration)
         return id
     }
 
-    /// Finishes a pending row: waits for the text and marks it transcribed or error.
+    /// Finishes a pending row: waits for the text, up to the time limit,
+    /// and marks it transcribed or error.
     public func transcribe(id: Int64, transcription: any ThoughtTranscription, through seconds: Double) async {
+        let limit = timeLimit(seconds)
+        let started = ContinuousClock.now
         do {
-            let text = try await transcription.finish(through: seconds)
+            let text = try await firstOf(limit: limit) {
+                try await transcription.finish(through: seconds)
+            }
             try await store.markTranscribed(id: id, text: text, recognizer: transcription.recognizer)
+            let took = (ContinuousClock.now - started).formatted(.units(allowed: [.seconds, .milliseconds], width: .narrow))
+            await store.log(.info, "speech", "Transcribed \(text.count) characters in \(took)", chunkID: id)
+        } catch let timeout as TranscriptionTimeout {
+            transcription.cancel()
+            try? await store.markError(id: id, message: timeout.description)
+            await store.log(.error, "speech", timeout.description, chunkID: id)
         } catch {
             try? await store.markError(id: id, message: "Speech recognition failed: \(error)")
+            await store.log(.error, "speech", "Recognition failed: \(error)", chunkID: id)
         }
     }
 
     /// Rows left pending by a quit or crash: recognise their saved audio
     /// again. Rows whose audio can't be read are marked error.
     public func finishPending(locale: Locale) async {
-        guard let ids = try? await store.pendingIDs() else { return }
+        let ids: [Int64]
+        do {
+            ids = try await store.pendingIDs()
+        } catch {
+            await store.log(.error, "recovery", "Couldn't look for pending thoughts: \(error)")
+            return
+        }
+        await store.log(.info, "recovery", "Found \(ids.count) thought(s) left pending")
         for id in ids {
             guard let audio = try? await store.audio(id: id),
                   let samples = try? AudioEncoding.decode(audio.data, format: audio.format, sampleRate: audio.sampleRate)
             else {
                 try? await store.markError(id: id, message: "The app stopped before recognition finished, and the audio couldn't be read.")
+                await store.log(.error, "recovery", "Couldn't read the saved audio", chunkID: id)
                 continue
             }
+            await store.log(.info, "recovery", "Recognising \(samples.count) saved samples at \(audio.sampleRate) Hz", chunkID: id)
             let rate = Double(audio.sampleRate)
             let transcription = SavedAudioTranscription(
                 samples: samples, sampleRate: rate,

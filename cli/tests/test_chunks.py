@@ -30,6 +30,11 @@ def test_audio_is_saved_first_and_readable_while_the_app_writes(app_db, db_tool,
     assert speed["saved_after_seconds"] < speed["text_after_seconds"]
     assert seen_pending, "a row should be visible as pending before its text arrives"
 
+    assert cli.main(["--db", str(app_db), "events"]) == 0
+    log = capsys.readouterr().out
+    assert log.count("Saved 2500 ms of audio") == 3
+    assert log.count("Transcribed") == 3
+
     con = db.connect(app_db)
     rows = con.execute(
         "SELECT status, raw_text, duration_ms, audio, audio_format, audio_sample_rate, mic_uid, "

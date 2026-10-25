@@ -46,7 +46,7 @@ struct StorageTests {
         let db = try Schema.open(path: path)
         #expect(try db.userVersion == 1)
         let tables = try db.query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").compactMap { $0[0].text }
-        #expect(tables == ["active_model", "app_state", "chunks", "dataset_days", "labels", "models"])
+        #expect(tables == ["active_model", "app_state", "chunks", "dataset_days", "events", "labels", "models"])
         #expect(try db.query("PRAGMA journal_mode").first?.first?.text == "wal")
         // Opening again doesn't migrate twice.
         _ = try Schema.open(path: path)
@@ -113,6 +113,26 @@ struct StorageTests {
         #expect(abs(Double(decoded.count) / Double(audio.sampleRate) - 1.5) < 0.05)
     }
 
+    @Test func recognitionThatNeverAnswersTimesOut() async throws {
+        let path = temporaryDatabasePath()
+        let store = try ChunkStore(path: path)
+        var recorder = ChunkRecorder(store: store)
+        recorder.timeLimit = { _ in 0.3 }
+        let captured = thought(seconds: 1)
+        let started = ContinuousClock.now
+        let id = try #require(await recorder.record(captured, meta: meta(for: captured),
+                                                     transcription: HangingTranscription()))
+        #expect(ContinuousClock.now - started < .seconds(3))
+        let row = try #require(try await store.chunk(id: id))
+        #expect(row.status == "error")
+        #expect(row.error?.contains("didn't finish") == true)
+        #expect(try await store.audio(id: id)?.data.isEmpty == false)
+
+        let events = try Database(path: path).query("SELECT level, category, message FROM events ORDER BY id")
+        #expect(events.map { $0[1].text } == ["save", "speech"])
+        #expect(events.last?[0].text == "error")
+    }
+
     @Test func storesWhereAndWhen() async throws {
         let path = temporaryDatabasePath()
         let store = try ChunkStore(path: path)
@@ -156,6 +176,15 @@ struct StorageTests {
         #expect(try await store.count() == 1)
         try await store.deleteAllRecordings()
         #expect(try await store.count() == 0)
+    }
+}
+
+/// Never answers and ignores cancellation, like a stuck recognizer.
+struct HangingTranscription: ThoughtTranscription {
+    let recognizer = "hangs"
+    func finish(through seconds: Double) async throws -> String {
+        await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+        return ""
     }
 }
 

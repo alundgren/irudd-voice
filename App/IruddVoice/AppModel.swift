@@ -95,7 +95,10 @@ final class AppModel {
 
         capture.onEvent = { [weak self] event in self?.handle(event) }
         capture.onLevel = { [weak self] peak in self?.level = peak }
-        capture.onTrouble = { [weak self] _ in self?.controller.restart() }
+        capture.onTrouble = { [weak self] reason in
+            self?.log(.warning, "mic", "\(reason). Reopening the mic.")
+            self?.controller.restart()
+        }
 
         controller = DeviceController(
             source: deviceSource, stream: capture, pinnedUID: pinnedUID,
@@ -118,6 +121,7 @@ final class AppModel {
             databaseError = "Can't open the database: \(error)"
         }
         overlay = OverlayController(model: self)
+        log(.info, "app", "Started \(Self.appVersion)")
         Task {
             await refreshDatabaseInfo()
             await checkSpeechFiles()
@@ -156,6 +160,7 @@ final class AppModel {
 
     private func micStateChanged(_ state: MicState) {
         micState = state
+        log(.info, "mic", Self.describe(state))
         if !state.isListening {
             level = 0
             if activity == .hearing { activity = .idle }
@@ -184,7 +189,11 @@ final class AppModel {
     }
 
     private func startSpeech() -> SpeechSession? {
-        guard speechFiles == .installed, let speechLocale, let rate = capture.sampleRate else { return nil }
+        guard speechFiles == .installed, let speechLocale, let rate = capture.sampleRate else {
+            log(.warning, "speech", "No recognition for this thought: speech files \(speechFiles), "
+                + "locale \(speechLocale?.identifier ?? "none"), stream rate \(capture.sampleRate.map { "\($0)" } ?? "none")")
+            return nil
+        }
         return SpeechSession(locale: speechLocale, sampleRate: rate) { [weak self] text in
             Task { @MainActor in
                 guard let self, self.activity == .hearing else { return }
@@ -255,6 +264,23 @@ final class AppModel {
 
     var databasePath: String { store?.path ?? Schema.defaultPath }
 
+    /// Adds a line to the database's `events` table.
+    func log(_ level: LogLevel, _ category: String, _ message: String) {
+        guard let store else { return }
+        Task { await store.log(level, category, message) }
+    }
+
+    private static func describe(_ state: MicState) -> String {
+        switch state {
+        case .off: "Mic closed (switched off)"
+        case .noMicPicked: "No mic picked"
+        case .noPermission: "No microphone permission"
+        case .missing(let uid): "Mic missing: \(uid)"
+        case .listening(let device): "Listening to \(device.name) (\(device.uid), \(Int(device.sampleRate)) Hz)"
+        case .failed(let message): "Mic failed: \(message)"
+        }
+    }
+
     static var appVersion: String {
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "?"
@@ -273,6 +299,7 @@ final class AppModel {
         if case .downloading = speechFiles { return }
         speechFiles = await SpeechAssets.isInstalled() ? .installed : .missing
         permissions.speechReady = speechFiles == .installed
+        log(.info, "speech", "English speech files (\(speechLocale?.identifier ?? "?")): \(speechFiles)")
         if speechFiles == .installed, let store, let speechLocale {
             let recorder = ChunkRecorder(store: store)
             Task.detached(priority: .utility) { [weak self] in
@@ -296,6 +323,7 @@ final class AppModel {
                 await checkSpeechFiles()
             } catch {
                 speechFiles = .failed("The download failed: \(error.localizedDescription)")
+                log(.error, "speech", "Speech file download failed: \(error)")
             }
         }
     }
