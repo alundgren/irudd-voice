@@ -161,7 +161,7 @@ rm -rf "$previous"
 # A moved-in bundle keeps its old folder date, so Finder and Spotlight can
 # keep showing a cached icon. Touch it and re-register it with Launch Services.
 touch "$APPS_DIR/$APP_NAME"
-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+"${IRUDD_VOICE_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}" \
   -f "$APPS_DIR/$APP_NAME" >/dev/null 2>&1 || true
 
 say "Installed $APPS_DIR/$APP_NAME"

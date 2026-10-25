@@ -76,6 +76,11 @@ fake osascript <<'EOF2'
 #!/bin/bash
 exit 0
 EOF2
+# Never register the test's fake apps with the real Launch Services.
+fake lsregister <<'EOF2'
+#!/bin/bash
+echo "$*" >>"$FAKE_STATE/registered"
+EOF2
 
 passed=0
 fail() { echo "FAIL [$case_name]: $*" >&2; echo "--- output ---" >&2; cat "$work/out" >&2; exit 1; }
@@ -98,6 +103,7 @@ run() {
   env -i HOME="$work/$case_name/home" PATH="$fakes:/usr/bin:/bin" \
     FAKE_STATE="$state" FAKE_SHA1="$SHA1" \
     IRUDD_VOICE_APPS_DIR="$apps" IRUDD_VOICE_BUILD_DIR="$work/$case_name/build" \
+    IRUDD_VOICE_LSREGISTER="$fakes/lsregister" \
     ${vars[@]+"${vars[@]}"} bash "$REPO_DIR/install.sh" ${opts[@]+"${opts[@]}"} >"$work/out" 2>&1
   local code=$?
   set -e
@@ -133,6 +139,7 @@ run install 0 "Certificate SHA-1: $SHA1"
 grep -q new "$last_apps/irudd-voice.app/Contents/MacOS/irudd-voice" || fail "app not replaced"
 [[ -z "$(ls -A "$last_apps" | grep -v '^irudd-voice.app$')" ]] || fail "leftover files in the apps folder"
 grep -q "irudd-voice.app" "$last_state/opened" || fail "app not opened"
+grep -q -- "-f .*irudd-voice.app" "$last_state/registered" || fail "app not re-registered for its icon"
 
 run by-sha1 0 "Installed" IRUDD_VOICE_SIGNING_IDENTITY=$SHA1 --no-open
 
