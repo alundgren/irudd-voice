@@ -13,6 +13,7 @@ tests that run the fixtures in `fixtures/`.
 | `judge-reply.schema.json` | JSON schema of a judge's reply, `{"better": "A" \| "B" \| "tie"}` | CLI (eval-compare), passed to the teacher CLIs |
 | `fixtures/prompt-building.json` | Exact system and user messages for given inputs | Swift and Python tests |
 | `fixtures/hard-checks.json` | Reply parsing and hard-check results every implementation must match | Swift and Python tests |
+| `fixtures/thought-pieces.json` | How a long thought is split into pieces before cleanup | Swift and Python tests |
 | `manifest.schema.md` | Model folders and `manifest.json` | App, CLI |
 | `vocabulary.schema.md` | `vocabulary.json` | App, CLI |
 | `app-state.md` | Keys the app and CLI use to coordinate through the database | App, CLI |

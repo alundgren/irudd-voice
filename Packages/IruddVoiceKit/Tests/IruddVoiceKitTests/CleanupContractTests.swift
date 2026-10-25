@@ -137,6 +137,31 @@ struct HardCheckTests {
     }
 }
 
+struct ThoughtPieceFixtureTests {
+    struct Case: Decodable {
+        var name: String
+        var text: String
+        var max_words: Int?
+        var pieces: [String]
+    }
+
+    struct File: Decodable { var cases: [Case] }
+
+    static let cases: [Case] = (try? fixture("thought-pieces.json", File.self).cases) ?? []
+
+    @Test func fixturesAreThere() {
+        #expect(Self.cases.count >= 10)
+        #expect(Set(Self.cases.map(\.name)).count == Self.cases.count)
+    }
+
+    @Test(arguments: cases.map(\.name))
+    func splits(name: String) throws {
+        let item = try #require(Self.cases.first { $0.name == name })
+        let pieces = ThoughtPieces.split(item.text, maxWords: item.max_words ?? ThoughtPieces.maxWords)
+        #expect(pieces == item.pieces)
+    }
+}
+
 /// Details the shared fixtures can't carry (accepted replies with extra keys
 /// would fail the label tool's teacher schema). cli/tests/test_hardchecks.py
 /// has the same cases.

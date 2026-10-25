@@ -53,7 +53,7 @@ public enum AppStatus: String, CaseIterable, Sendable {
         case .ready: "Unmute the mic to start a thought."
         case .hearing: "Mute the mic when you're done."
         case .cleaningUp: "Turning your words into clean text."
-        case .textWaiting: "Go back to where you were talking to paste it."
+        case .textWaiting: "Put your cursor where it goes, then press Paste Here below."
         case .micMissing: "Plug the mic back in. The app won't use another mic."
         }
     }

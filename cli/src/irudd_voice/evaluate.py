@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
 
-from . import hardchecks
+from . import hardchecks, pieces
 from . import prompt as cleanup_prompt
 from .generation import read_jsonl
 from .models import utc_now
@@ -29,6 +29,7 @@ class Output:
     text: str
     hit_limit: bool
     seconds: float
+    timed_out: bool = False  # stopped at the prompt's deadline (generation.timeout_seconds)
 
 
 # transcript, vocabulary terms -> what the model generated
@@ -66,7 +67,10 @@ def percentile(values: list[float], p: float) -> float | None:
 
 def score_item(item: dict, out: Output, prompt: dict) -> dict:
     terms = item.get("vocabulary", [])[: prompt["vocabulary_limit"]]
-    reply = hardchecks.parse_reply(out.text, hit_limit=out.hit_limit, key=prompt["output_key"])
+    if out.timed_out:
+        reply = hardchecks.Reply(None, "timeout")
+    else:
+        reply = hardchecks.parse_reply(out.text, hit_limit=out.hit_limit, key=prompt["output_key"])
     if reply.cleaned is None:
         failures = [reply.failure]
     else:
@@ -87,6 +91,39 @@ def score_item(item: dict, out: Output, prompt: dict) -> dict:
         result["similarity"] = None if reply.cleaned is None else round(similarity(reply.cleaned, item["expected"]), 4)
         result["pasted_similarity"] = round(similarity(pasted, item["expected"]), 4)
     return result
+
+
+def score_thought(item: dict, generate: Generator, prompt: dict) -> dict:
+    """One thought cleaned the way the app cleans it (ThoughtCleaner.swift):
+    split into pieces, each piece generated and hard-checked on its own,
+    stopping at the first piece that fails. The cleaned pieces are joined
+    with a space. On any failure, or when nothing is left, the raw
+    transcript is pasted. `cleaned` joins the model's text for the pieces
+    it got to, so a report can still show what the model said."""
+    terms = item.get("vocabulary", [])
+    parts = pieces.split(item["transcript"])
+    cleaned: list[str] = []
+    failures: list[str] = []
+    seconds = 0.0
+    for piece in parts:
+        scored = score_item({"id": item["id"], "transcript": piece, "vocabulary": terms},
+                            generate(piece, terms), prompt)
+        seconds += scored["seconds"]
+        if scored["cleaned"] is not None:
+            cleaned.append(scored["cleaned"])
+        if scored["failures"]:
+            failures = scored["failures"]
+            break
+    joined = " ".join(text for text in cleaned if text)
+    if not failures and not joined:
+        failures = ["empty"]
+    return {
+        "cleaned": joined if cleaned else None,
+        "failures": failures,
+        "pasted": item["transcript"] if failures else joined,
+        "seconds": round(seconds, 3),
+        "pieces": len(parts),
+    }
 
 
 def summarize(results: list[dict]) -> dict:

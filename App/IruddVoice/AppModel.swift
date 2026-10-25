@@ -78,8 +78,12 @@ final class AppModel {
 
     private(set) var hotkeys: [HotkeyAction: Hotkey] = [:]
     private(set) var hotkeyErrors: [HotkeyAction: String] = [:]
-    /// Text that couldn't be pasted where it was meant to go.
-    private(set) var waiting: WaitingText?
+    /// Text that couldn't be pasted where it was meant to go, oldest first.
+    /// A new one never replaces an older one: each stays until it's pasted,
+    /// copied or thrown away.
+    private(set) var waitingTexts: [WaitingText] = []
+    /// The newest waiting text: what the hotkeys act on.
+    var waiting: WaitingText? { waitingTexts.last }
     private let paster = Paster(clipboard: SystemClipboard(), keyboard: SystemKeyboard(), focus: AccessibilityFocus())
     private let focus = AccessibilityFocus()
 
@@ -441,7 +445,7 @@ final class AppModel {
         let app = target?.appName ?? "?"
         switch outcome {
         case .pasted:
-            if waiting?.id == id { waitingCleared() }
+            waitingCleared(id)
             Task { try? await store?.markPaste(id: id, status: "pasted", text: text) }
             log(.info, "paste", "Pasted \(text.count) characters into \(app) (#\(id))")
         case .waiting(let reason):
@@ -453,42 +457,47 @@ final class AppModel {
         }
     }
 
-    /// The waiting text is gone (pasted, copied or thrown away). The icon
-    /// goes back to Cleaning up if another thought is still being made.
-    private func waitingCleared() {
-        waiting = nil
-        if activity == .textWaiting { activity = delivery.isBusy ? .cleaningUp : .idle }
+    /// Waiting text `id` is gone (pasted, copied or thrown away). When no
+    /// text is left waiting, the icon goes back to Cleaning up if another
+    /// thought is still being made.
+    private func waitingCleared(_ id: Int64) {
+        waitingTexts.removeAll { $0.id == id }
+        if waiting == nil, activity == .textWaiting { activity = delivery.isBusy ? .cleaningUp : .idle }
     }
 
     private func hold(_ text: WaitingText) {
-        waiting = text
+        waitingTexts.removeAll { $0.id == text.id }
+        waitingTexts.append(text)
         if activity != .hearing { activity = .textWaiting }
         Task { try? await store?.markPaste(id: text.id, status: "waiting", text: nil) }
     }
 
-    /// Paste here: pastes the waiting (or last) text into whatever has focus
-    /// once the panel has closed.
-    func pasteHere() {
-        guard let (picked, _) = textToPasteAgain() else { return }
+    /// Paste here: pastes a waiting text into whatever has focus once the
+    /// panel has closed.
+    func pasteHere(_ item: WaitingText) {
+        guard isWaiting(item) else { return }
         // Give focus back to the app you were in before opening the panel.
         if NSApp.isActive { NSApp.hide(nil) }
         Task {
             try? await Task.sleep(for: .milliseconds(350))
-            // Thrown away during the wait: paste nothing.
-            guard let (id, text) = pasteAgain.recheck(id: picked, waiting: waiting.map { ($0.id, $0.text) },
-                                                      newest: lastChunk) else { return }
+            // Thrown away (or copied) during the wait: paste nothing.
+            guard isWaiting(item) else { return }
             let target = focus.current()
-            let outcome = await paster.pasteHere(text)
-            record(outcome, id: id, text: text, target: target)
+            let outcome = await paster.pasteHere(item.text)
+            record(outcome, id: item.id, text: item.text, target: target)
         }
     }
 
-    /// Copy: puts the waiting text on the clipboard to keep.
-    func copyWaiting() {
-        guard let waiting else { return }
-        SystemClipboard().copy(waiting.text)
-        Task { try? await store?.markPaste(id: waiting.id, status: "copied", text: waiting.text) }
-        waitingCleared()
+    /// Copy: puts a waiting text on the clipboard to keep.
+    func copyWaiting(_ item: WaitingText) {
+        guard isWaiting(item) else { return }
+        SystemClipboard().copy(item.text)
+        Task { try? await store?.markPaste(id: item.id, status: "copied", text: item.text) }
+        waitingCleared(item.id)
+    }
+
+    private func isWaiting(_ item: WaitingText) -> Bool {
+        waitingTexts.contains { $0.id == item.id }
     }
 
     /// The Throw Away hotkey: ends the thought being heard, drops the
@@ -498,13 +507,14 @@ final class AppModel {
         throwAway(.hotkey)
     }
 
-    /// The Throw Away button on the waiting text: drops that text, whatever
+    /// The Throw Away button on a waiting text: drops that text, whatever
     /// else is going on.
-    func throwAwayWaiting() {
-        throwAway(.waitingRow)
+    func throwAwayWaiting(_ item: WaitingText) {
+        throwAway(.waitingRow, waitingText: isWaiting(item) ? item : nil)
     }
 
-    private func throwAway(_ source: ThrowAwayTarget.Source) {
+    private func throwAway(_ source: ThrowAwayTarget.Source, waitingText: WaitingText? = nil) {
+        let waiting = source == .waitingRow ? waitingText : self.waiting
         switch ThrowAwayTarget.pick(source, activity: activity, hasWaitingText: waiting != nil,
                                     deliveryBusy: delivery.isBusy) {
         case .thoughtBeingHeard:
@@ -518,7 +528,7 @@ final class AppModel {
             Task { try? await store?.markDiscarded(id: waiting.id) }
             log(.info, "paste", "Waiting text thrown away (#\(waiting.id))")
             pasteAgain.thrownAway(id: waiting.id)
-            waitingCleared()
+            waitingCleared(waiting.id)
         case .nothing:
             break
         }

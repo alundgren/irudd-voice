@@ -3,7 +3,8 @@ the frozen test thoughts.
 
 Both models clean every test thought (chunks on test days with a frozen
 accepted label) through the shared prompt, reply parser and hard checks,
-exactly as the app would. The report has, per thought: each model's hard
+exactly as the app would: long thoughts in pieces (pieces.py), each piece
+within the prompt's deadline. The report has, per thought: each model's hard
 check failures, how close what it would paste is to the label, and a blind
 vote by the teacher CLI (judge.py). The report is bound to both models'
 manifests, the candidate's dataset, the frozen test set and the prompt,
@@ -32,7 +33,8 @@ from .model_commands import reports_errors
 from .models import DEFAULT_MODELS_DIR, ModelError, default_model_id, utc_now
 
 REPORT_KIND = "eval-compare"
-REPORT_VERSION = 1
+# 2: thoughts are cleaned in pieces within the prompt's deadline, as in the app.
+REPORT_VERSION = 2
 # The promotion rule (plan check promote-only-better).
 MIN_COMPARED = 100
 MIN_WIN_PERCENT = 55
@@ -87,35 +89,31 @@ def model_row(con, model_id: str) -> dict | None:
 
 
 def load_generator(folder: Path) -> evaluate.Generator:
-    """A warm model that cleans like the app does."""
+    """A warm model that cleans like the app does, stopping a piece at the
+    prompt's deadline."""
     from .generation import Model
 
     model = Model(folder)
     model.clean("warm up")  # the first call compiles kernels
+    deadline = model.prompt["generation"]["timeout_seconds"]
 
     def generate(transcript: str, terms: list[str]) -> evaluate.Output:
-        gen = model.clean(transcript, terms)
-        return evaluate.Output(gen.text, gen.hit_limit, gen.seconds)
+        gen = model.clean(transcript, terms, deadline_seconds=deadline)
+        return evaluate.Output(gen.text, gen.hit_limit, gen.seconds, gen.timed_out)
 
     return generate
 
 
 def run_model(folder: Path, thoughts: list[tuple[int, str, str]], terms: list[str], log=print) -> list[dict]:
-    """Each thought through one model: reply, hard checks and what the app
-    would paste (the raw transcript when anything fails)."""
+    """Each thought through one model: hard checks and what the app would
+    paste (the raw transcript when anything fails)."""
     generate = load_generator(folder)
     prompt = cleanup_prompt.load()
     results = []
     for chunk_id, transcript, label in thoughts:
         item = {"id": chunk_id, "transcript": transcript, "vocabulary": terms, "expected": label}
-        scored = evaluate.score_item(item, generate(transcript, terms), prompt)
-        results.append({
-            "cleaned": scored["cleaned"],
-            "failures": scored["failures"],
-            "pasted": scored["cleaned"] if not scored["failures"] else transcript,
-            "similarity": scored["pasted_similarity"],
-            "seconds": scored["seconds"],
-        })
+        scored = evaluate.score_thought(item, generate, prompt)
+        results.append({**scored, "similarity": round(evaluate.similarity(scored["pasted"], label), 4)})
         log(f"{folder.name} #{chunk_id}: {','.join(scored['failures']) or 'ok'}")
     del generate
     gc.collect()  # let MLX free this model before the next one loads

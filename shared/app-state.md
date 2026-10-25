@@ -39,7 +39,7 @@ detail for `promote` and `spot-check`):
 
 | Field | Meaning |
 | --- | --- |
-| `kind`, `version` | `"eval-compare"`, `1` |
+| `kind`, `version` | `"eval-compare"`, `2` (1 cleaned each thought whole, with no deadline; `promote` refuses it) |
 | `candidate.id`, `incumbent.id` | The model scored and the model it was compared with (the active one then) |
 | `created_at` | When the report was made, UTC |
 | `summary.thoughts` | Frozen test thoughts both models cleaned |

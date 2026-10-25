@@ -26,7 +26,7 @@ nothing is recorded until you switch it on again.
 | Ready | `mic` | Listening, waiting for you to unmute |
 | Hearing you | `mic.fill` | Recording a thought |
 | Cleaning up | `sparkles` | Turning the thought into clean text |
-| Text waiting | `text.badge.plus` | Text is ready but you moved away; go back to paste it |
+| Text waiting | `text.badge.plus` | Text is ready but you moved away; paste it from the panel |
 | Mic missing | `mic.badge.xmark` | The pinned mic isn't connected; the app waits |
 
 Not set up wins over everything, then Off, then Mic missing, then the
@@ -135,7 +135,10 @@ up** meanwhile; a 50-word thought takes about 1.2 s.
   thought ended. If you switched app, or switched to another text box or
   conversation in the same app, nothing is pasted anywhere. The icon shows
   **Text waiting**, and the panel offers **Paste Here** (closes the panel
-  and pastes where your cursor is), **Copy** and **Throw Away**.
+  and pastes where your cursor is), **Copy** and **Throw Away**. Each text
+  that couldn't be pasted stays in the panel, newest first, until you
+  paste, copy or throw it away; a newer one never replaces it. The hotkeys
+  act on the newest one.
 - The text goes through the clipboard and ⌘V. The old clipboard (text,
   images, anything) is put back 1 second later, unless you copied
   something new in the meantime. The dictation is marked concealed and

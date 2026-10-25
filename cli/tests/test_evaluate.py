@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from irudd_voice import evaluate, hardchecks, parity, train
+from irudd_voice import evaluate, hardchecks, parity, prompt, train
 
 EVALS = Path(__file__).resolve().parents[2] / "evals"
 
@@ -78,3 +78,55 @@ def test_parity_inputs_cover_escaping():
         assert char in text
     assert any(i["vocabulary"] for i in rows("parity"))
     assert parity.DEFAULT_INPUTS == EVALS / "parity.jsonl"
+
+
+WORDS = "alpha bravo charlie delta echo foxtrot golf hotel india juliet".split()
+
+
+def sentences(count):
+    return " ".join(" ".join(WORDS) + "." for _ in range(count))
+
+
+def test_a_long_thought_is_cleaned_in_pieces_like_the_app():
+    transcript = sentences(15)  # 150 words: two pieces
+    seen = []
+
+    def generate(piece, terms):
+        seen.append(piece)
+        return evaluate.Output(train.reply_text(piece.capitalize()), False, 0.5)
+
+    scored = evaluate.score_thought({"id": 1, "transcript": transcript}, generate, prompt.load())
+    assert seen == [sentences(12), " ".join(transcript.split()[120:])]
+    assert all(len(piece.split()) <= 120 for piece in seen)
+    assert scored["failures"] == [] and scored["pieces"] == 2 and scored["seconds"] == 1.0
+    assert scored["pasted"] == scored["cleaned"] == " ".join(piece.capitalize() for piece in seen)
+
+
+def test_a_failing_piece_pastes_the_whole_transcript():
+    transcript = sentences(15)
+    calls = []
+
+    def generate(piece, terms):
+        calls.append(piece)
+        if len(calls) == 1:
+            return evaluate.Output(train.reply_text(piece), False, 0.5)
+        return evaluate.Output('{"cleaned": "w', False, 5.0, timed_out=True)
+
+    scored = evaluate.score_thought({"id": 1, "transcript": transcript}, generate, prompt.load())
+    assert scored["failures"] == ["timeout"]
+    assert scored["pasted"] == transcript
+    assert scored["cleaned"] == calls[0]  # what the model said for the pieces it got to
+
+
+def test_a_timed_out_reply_is_never_used():
+    item = {"id": 1, "transcript": "set the port to eighty"}
+    scored = evaluate.score_item(item, evaluate.Output(train.reply_text("Set the port to eighty."), False, 5.0,
+                                                       timed_out=True), prompt.load())
+    assert scored["failures"] == ["timeout"] and scored["cleaned"] is None
+
+
+def test_nothing_left_after_cleanup_pastes_the_transcript():
+    scored = evaluate.score_thought({"id": 1, "transcript": "um"},
+                                    lambda piece, terms: evaluate.Output(train.reply_text(""), False, 0.1),
+                                    prompt.load())
+    assert scored["failures"] == ["empty"] and scored["pasted"] == "um"
