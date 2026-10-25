@@ -20,7 +20,10 @@ final class AppModel {
     }
 
     var previewMode: PreviewMode {
-        didSet { preferences.previewMode = previewMode }
+        didSet {
+            preferences.previewMode = previewMode
+            overlay?.update()
+        }
     }
 
     private(set) var hasCompletedSetup: Bool
@@ -35,7 +38,26 @@ final class AppModel {
     private(set) var level: Float = 0
 
     private(set) var activity: AppStatus.Activity = .idle
-    private(set) var lastThought: ThoughtSummary?
+
+    // MARK: Recording and speech
+
+    /// The newest saved row.
+    private(set) var lastChunk: ChunkSummary?
+    /// Text heard so far in the thought in progress (final plus volatile).
+    private(set) var liveText = ""
+    /// The text of the thought that just ended, shown briefly in Transcript mode.
+    private(set) var justFinishedText: String?
+    private(set) var databaseSize: Int64 = 0
+    private(set) var dailyBytes: [(day: String, bytes: Int64)] = []
+    private(set) var databaseError: String?
+    private(set) var speechFiles: SpeechFilesState = .checking
+
+    private var store: ChunkStore?
+    private var session: SpeechSession?
+    private var thoughtSignalAt = Date()
+    private var speechLocale: Locale?
+    private var overlay: OverlayController?
+    private var thoughtsInFlight = 0
 
     // MARK: Hotkey
 
@@ -89,6 +111,17 @@ final class AppModel {
         if !hotkeys.register(hotkey) {
             hotkeyError = "\(hotkey?.display ?? "The hotkey") is already used by another app."
         }
+
+        do {
+            store = try ChunkStore()
+        } catch {
+            databaseError = "Can't open the database: \(error)"
+        }
+        overlay = OverlayController(model: self)
+        Task {
+            await refreshDatabaseInfo()
+            await checkSpeechFiles()
+        }
     }
 
     // MARK: Mic
@@ -131,11 +164,130 @@ final class AppModel {
 
     private func handle(_ event: ThoughtEvent) {
         switch event {
-        case .started:
+        case .started(_, let preRoll):
             activity = .hearing
+            thoughtSignalAt = Date()
+            liveText = ""
+            justFinishedText = nil
+            session = startSpeech()
+            session?.append(preRoll)
+        case .audio(let samples):
+            session?.append(samples)
         case .ended(let thought):
             activity = .idle
-            lastThought = ThoughtSummary(thought: thought, endedAt: Date())
+            save(thought, transcription: session)
+            session = nil
+        }
+        overlay?.update()
+    }
+
+    private func startSpeech() -> SpeechSession? {
+        guard speechFiles == .installed, let speechLocale, let rate = capture.sampleRate else { return nil }
+        return SpeechSession(locale: speechLocale, sampleRate: rate) { [weak self] text in
+            Task { @MainActor in
+                guard let self, self.activity == .hearing else { return }
+                self.liveText = text
+                self.overlay?.update()
+            }
+        }
+    }
+
+    /// Saves the audio first, then the text when recognition finishes.
+    private func save(_ thought: CapturedThought, transcription: SpeechSession?) {
+        guard let store else { return }
+        let device: AudioDeviceInfo? = if case .listening(let info) = micState { info } else { nil }
+        let target = NSWorkspace.shared.frontmostApplication
+        let isUs = target?.bundleIdentifier == Bundle.main.bundleIdentifier
+        let meta = ChunkMeta(
+            thought: thought, signalAt: thoughtSignalAt,
+            micUID: device?.uid ?? pinnedUID ?? "unknown", micName: device?.name ?? pinnedName,
+            micModelUID: device?.modelUID,
+            targetAppBundleID: isUs ? nil : target?.bundleIdentifier,
+            targetAppName: isUs ? nil : target?.localizedName,
+            appVersion: Self.appVersion)
+        let recorder = ChunkRecorder(store: store)
+        let transcription: (any ThoughtTranscription)? = transcription
+            ?? UnavailableTranscription(reason: speechFiles == .installed
+                ? "Speech recognition didn't start for this thought."
+                : SpeechSetupError.assetsMissing.description)
+        thoughtsInFlight += 1
+        Task.detached(priority: .userInitiated) { [weak self] in
+            await recorder.record(thought, meta: meta, transcription: transcription, saved: { _ in
+                Task { @MainActor in await self?.refreshDatabaseInfo() }
+            })
+            await MainActor.run { self?.thoughtsInFlight -= 1 }
+            await self?.refreshDatabaseInfo()
+            await self?.showFinished()
+        }
+    }
+
+    private func showFinished() {
+        guard activity != .hearing else { return }
+        justFinishedText = lastChunk?.rawText
+        overlay?.update()
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            if self.activity != .hearing {
+                self.justFinishedText = nil
+                self.overlay?.update()
+            }
+        }
+    }
+
+    func refreshDatabaseInfo() async {
+        guard let store else { return }
+        lastChunk = try? await store.latest()
+        databaseSize = store.sizeOnDisk()
+        dailyBytes = (try? await store.dailyBytes(days: 7)) ?? []
+    }
+
+    func deleteAllRecordings() async {
+        guard let store else { return }
+        do {
+            try await store.deleteAllRecordings()
+        } catch {
+            databaseError = "Couldn't delete: \(error)"
+        }
+        await refreshDatabaseInfo()
+    }
+
+    var databasePath: String { store?.path ?? Schema.defaultPath }
+
+    static var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
+    }
+
+    // MARK: Speech files
+
+    func checkSpeechFiles() async {
+        speechLocale = await SpeechAssets.locale()
+        guard speechLocale != nil else {
+            speechFiles = .failed("English speech recognition isn't available on this Mac.")
+            return
+        }
+        if case .downloading = speechFiles { return }
+        speechFiles = await SpeechAssets.isInstalled() ? .installed : .missing
+        permissions.speechReady = speechFiles == .installed
+    }
+
+    func installSpeechFiles() {
+        if case .downloading = speechFiles { return }
+        speechFiles = .downloading(0)
+        Task {
+            do {
+                try await SpeechAssets.install { fraction in
+                    Task { @MainActor in
+                        if case .downloading = self.speechFiles { self.speechFiles = .downloading(fraction) }
+                    }
+                }
+                speechFiles = .checking
+                await checkSpeechFiles()
+            } catch {
+                speechFiles = .failed("The download failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -187,6 +339,8 @@ final class AppModel {
         hasCompletedSetup = true
         updateListening()
     }
+
+
 }
 
 struct MicChoice: Identifiable, Equatable {
@@ -196,17 +350,19 @@ struct MicChoice: Identifiable, Equatable {
     var id: String { uid }
 }
 
-/// What the panel shows about the last thought until recording is built.
-struct ThoughtSummary {
-    let duration: Double
-    let startReason: ThoughtStartReason
-    let endReason: ThoughtEndReason
-    let endedAt: Date
-
-    init(thought: CapturedThought, endedAt: Date) {
-        duration = thought.duration
-        startReason = thought.startReason
-        endReason = thought.endReason
-        self.endedAt = endedAt
+/// Stands in for recognition that couldn't run, so the row says why.
+struct UnavailableTranscription: ThoughtTranscription {
+    let reason: String
+    var recognizer: String { "none" }
+    func finish(through seconds: Double) async throws -> String {
+        throw DatabaseError(message: reason)
     }
+}
+
+enum SpeechFilesState: Equatable {
+    case checking
+    case missing
+    case downloading(Double)
+    case installed
+    case failed(String)
 }

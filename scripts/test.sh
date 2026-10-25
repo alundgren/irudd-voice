@@ -7,6 +7,11 @@ cd "$REPO_DIR"
 echo "== Logic tests"
 swift test --package-path Packages/IruddVoiceKit
 
+echo "== CLI tests (with the app's database code)"
+swift build --product voice-db-tool --package-path Packages/IruddVoiceKit
+VOICE_DB_TOOL="$REPO_DIR/Packages/IruddVoiceKit/.build/debug/voice-db-tool" \
+  uv run --project cli --quiet pytest -q cli/tests
+
 echo "== Installer tests"
 tests/install-test.sh
 

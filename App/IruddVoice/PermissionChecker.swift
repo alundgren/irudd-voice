@@ -16,6 +16,11 @@ final class PermissionChecker {
         didSet { refresh() }
     }
 
+    /// Set by the app model when the speech files are installed.
+    var speechReady = false {
+        didSet { refresh() }
+    }
+
     init() {
         refresh()
     }
@@ -26,7 +31,7 @@ final class PermissionChecker {
             .speechRecognition: speech(),
             .accessibility: AXIsProcessTrusted() ? .granted : .notAsked,
             .clipboard: clipboard(),
-        ], micPicked: micPicked)
+        ], micPicked: micPicked, speechReady: speechReady)
         if next != checklist { checklist = next }
     }
 

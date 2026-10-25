@@ -4,3 +4,6 @@ boya-probe-*.log
 xcuserdata/
 *.xcuserstate
 DerivedData/
+.venv/
+__pycache__/
+.pytest_cache/

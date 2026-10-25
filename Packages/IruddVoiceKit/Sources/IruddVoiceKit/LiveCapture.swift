@@ -30,6 +30,8 @@ public final class LiveCapture: CaptureStream {
     public var onLevel: (@MainActor (Float) -> Void)?
 
     public private(set) var runningDeviceID: AudioDeviceID?
+    /// Sample rate of the open stream (the mic's own rate).
+    public var sampleRate: Double? { engine?.sampleRate }
     private var engine: CaptureEngine?
     private let settings: ThoughtSettings
 
@@ -102,7 +104,7 @@ private final class CaptureEngine: @unchecked Sendable {
     private var reportedStall = false
     private var levelPeak: Float = 0
     private var levelCount = 0
-    private let sampleRate: Double
+    let sampleRate: Double
 
     init(deviceID: AudioDeviceID, settings: ThoughtSettings, send: @escaping @Sendable (Message) -> Void) throws {
         self.deviceID = deviceID

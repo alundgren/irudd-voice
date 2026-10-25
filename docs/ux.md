@@ -68,6 +68,12 @@ waits for that exact mic.
 - Unplugging the mic, switching mics or switching the app off ends the
   thought and keeps what was heard.
 
+## Preview while talking: placement
+
+The preview floats just above the bottom of the screen, centred. It never
+takes focus or clicks. In Transcript mode the final text stays for 4
+seconds after a thought ends.
+
 ## Rules the app never breaks
 
 - It never switches to another mic. If the pinned mic is unplugged, it

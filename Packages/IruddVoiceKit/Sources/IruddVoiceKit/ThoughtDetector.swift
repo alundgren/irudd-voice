@@ -57,13 +57,28 @@ public struct CapturedThought: Sendable {
     public let startReason: ThoughtStartReason
     public let endReason: ThoughtEndReason
 
+    public init(samples: [Float], sampleRate: Double, firstSample: Int64, signalSample: Int64,
+                startReason: ThoughtStartReason, endReason: ThoughtEndReason) {
+        self.samples = samples
+        self.sampleRate = sampleRate
+        self.firstSample = firstSample
+        self.signalSample = signalSample
+        self.startReason = startReason
+        self.endReason = endReason
+    }
+
     public var duration: Double { Double(samples.count) / sampleRate }
     /// Seconds of audio kept from before the start signal.
     public var preRollDuration: Double { Double(signalSample - firstSample) / sampleRate }
 }
 
 public enum ThoughtEvent: Sendable {
-    case started(ThoughtStartReason)
+    /// A thought started. `preRoll` is the audio kept from before the start.
+    case started(ThoughtStartReason, preRoll: [Float])
+    /// More audio for the thought in progress, for live recognition. It can
+    /// run a little past the thought's end (until a mute is recognised); the
+    /// `ended` thought's samples are the exact audio.
+    case audio([Float])
     case ended(CapturedThought)
 }
 
@@ -100,6 +115,9 @@ public final class ThoughtDetector {
         var silenceStart: Int64 = 0
     }
     private var thought: Thought?
+    /// Audio added to the thought during the current `process` call, not yet
+    /// sent as an `.audio` event.
+    private var unsent: [Float] = []
 
     public init(sampleRate: Double, settings: ThoughtSettings = ThoughtSettings()) {
         self.sampleRate = sampleRate
@@ -123,8 +141,7 @@ public final class ThoughtDetector {
                 if isMuted {
                     isMuted = false
                     if thought == nil {
-                        start(at: pos, reason: .unmute)
-                        events.append(.started(.unmute))
+                        events.append(start(at: pos, reason: .unmute))
                     }
                 }
                 zeroRun = 0
@@ -132,42 +149,43 @@ public final class ThoughtDetector {
 
             if var current = thought {
                 current.samples.append(sample)
+                unsent.append(sample)
                 trackSilence(&current, sample: sample, pos: pos)
                 thought = current
                 if current.reason == .hotkey, current.silentSamples >= silenceTimeoutSamples {
-                    events.append(.ended(end(at: current.silenceStart, reason: .silence)))
+                    events += end(at: current.silenceStart, reason: .silence)
                 }
             }
 
             if !isMuted, zeroRun >= muteRunSamples, pos >= startupSamples {
                 isMuted = true
                 if thought != nil {
-                    events.append(.ended(end(at: zeroRunStart, reason: .muteButton)))
+                    events += end(at: zeroRunStart, reason: .muteButton)
                 }
             }
 
             preRoll.append(sample)
             position += 1
         }
+        flushUnsent(into: &events)
         return events
     }
 
     /// The start/stop hotkey: starts a thought, or ends the current one.
     public func hotkey() -> [ThoughtEvent] {
         if thought != nil {
-            return [.ended(end(at: position, reason: .hotkey))]
+            return end(at: position, reason: .hotkey)
         }
-        start(at: position, reason: .hotkey)
-        return [.started(.hotkey)]
+        return [start(at: position, reason: .hotkey)]
     }
 
     /// Ends the current thought, keeping what was heard so far.
     public func finish(_ reason: ThoughtEndReason) -> [ThoughtEvent] {
         guard thought != nil else { return [] }
-        return [.ended(end(at: position, reason: reason))]
+        return end(at: position, reason: reason)
     }
 
-    private func start(at pos: Int64, reason: ThoughtStartReason) {
+    private func start(at pos: Int64, reason: ThoughtStartReason) -> ThoughtEvent {
         let before = preRoll.contents()
         thought = Thought(
             samples: before,
@@ -176,21 +194,32 @@ public final class ThoughtDetector {
             reason: reason,
             silenceStart: pos
         )
+        return .started(reason, preRoll: before)
     }
 
-    /// Ends the thought at stream position `endPos`, dropping anything after it.
-    private func end(at endPos: Int64, reason: ThoughtEndReason) -> CapturedThought {
+    /// Ends the thought at stream position `endPos`, dropping anything after
+    /// it. Returns the last `.audio` (if any) and the `.ended` event.
+    private func end(at endPos: Int64, reason: ThoughtEndReason) -> [ThoughtEvent] {
+        var events: [ThoughtEvent] = []
+        flushUnsent(into: &events)
         let current = thought!
         thought = nil
         let keep = Int(max(0, min(Int64(current.samples.count), endPos - current.firstSample)))
-        return CapturedThought(
+        events.append(.ended(CapturedThought(
             samples: Array(current.samples.prefix(keep)),
             sampleRate: sampleRate,
             firstSample: current.firstSample,
             signalSample: current.signalSample,
             startReason: current.reason,
             endReason: reason
-        )
+        )))
+        return events
+    }
+
+    private func flushUnsent(into events: inout [ThoughtEvent]) {
+        guard !unsent.isEmpty else { return }
+        events.append(.audio(unsent))
+        unsent.removeAll(keepingCapacity: true)
     }
 
     private func trackSilence(_ current: inout Thought, sample: Float, pos: Int64) {

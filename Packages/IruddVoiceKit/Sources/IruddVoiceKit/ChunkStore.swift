@@ -1,0 +1,254 @@
+import Foundation
+
+/// Everything known about a thought when it's saved, apart from its audio.
+public struct ChunkMeta: Sendable {
+    public var uuid = UUID()
+    public var startedAt: Date
+    public var signalAt: Date
+    public var endedAt: Date
+    public var timeZone: TimeZone = .current
+    public var startReason: ThoughtStartReason
+    public var endReason: ThoughtEndReason
+    public var micUID: String
+    public var micName: String?
+    public var micModelUID: String?
+    public var targetAppBundleID: String?
+    public var targetAppName: String?
+    public var appVersion: String
+
+    public init(startedAt: Date, signalAt: Date, endedAt: Date, startReason: ThoughtStartReason,
+                endReason: ThoughtEndReason, micUID: String, micName: String? = nil, micModelUID: String? = nil,
+                targetAppBundleID: String? = nil, targetAppName: String? = nil, appVersion: String) {
+        self.startedAt = startedAt
+        self.signalAt = signalAt
+        self.endedAt = endedAt
+        self.startReason = startReason
+        self.endReason = endReason
+        self.micUID = micUID
+        self.micName = micName
+        self.micModelUID = micModelUID
+        self.targetAppBundleID = targetAppBundleID
+        self.targetAppName = targetAppName
+        self.appVersion = appVersion
+    }
+
+    /// Builds the times from a captured thought that ended now-ish:
+    /// `signalAt` is when the start was heard, the rest follows from the audio.
+    public init(thought: CapturedThought, signalAt: Date, micUID: String, micName: String?, micModelUID: String?,
+                targetAppBundleID: String?, targetAppName: String?, appVersion: String) {
+        let startedAt = signalAt.addingTimeInterval(-thought.preRollDuration)
+        self.init(startedAt: startedAt, signalAt: signalAt, endedAt: startedAt.addingTimeInterval(thought.duration),
+                  startReason: thought.startReason, endReason: thought.endReason, micUID: micUID, micName: micName,
+                  micModelUID: micModelUID, targetAppBundleID: targetAppBundleID, targetAppName: targetAppName,
+                  appVersion: appVersion)
+    }
+}
+
+/// One row, as the panel and tests need it.
+public struct ChunkSummary: Sendable, Equatable {
+    public let id: Int64
+    public let status: String
+    public let error: String?
+    public let rawText: String?
+    public let durationMs: Int64
+    public let endReason: String
+    public let endedAt: Date
+    public let audioFormat: String
+    public let audioSampleRate: Int
+    public let audioBytes: Int64
+}
+
+/// Reads and writes chunk rows. One connection, used from this actor only.
+public actor ChunkStore {
+    private let db: Database
+    public nonisolated let path: String
+
+    public init(path: String = Schema.defaultPath) throws {
+        self.path = path
+        db = try Schema.open(path: path)
+    }
+
+    /// Saves the audio as a pending row. This is the first thing that
+    /// happens when a thought ends, before recognition can fail.
+    public func insertPending(meta: ChunkMeta, audio: EncodedAudio, durationMs: Int64) throws -> Int64 {
+        let now = Timestamps.string(Date())
+        let offsetMinutes = meta.timeZone.secondsFromGMT(for: meta.startedAt) / 60
+        try db.query("""
+            INSERT INTO chunks (uuid, status, started_at, signal_at, ended_at, local_day, utc_offset_minutes,
+                duration_ms, start_reason, end_reason, mic_uid, mic_name, mic_model_uid, audio, audio_format,
+                audio_sample_rate, audio_bytes, target_app_bundle_id, target_app_name, schema_version,
+                app_version, created_at, updated_at)
+            VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                .text(meta.uuid.uuidString.lowercased()),
+                .text(Timestamps.string(meta.startedAt)),
+                .text(Timestamps.string(meta.signalAt)),
+                .text(Timestamps.string(meta.endedAt)),
+                .text(Timestamps.localDay(meta.startedAt, timeZone: meta.timeZone)),
+                .int(Int64(offsetMinutes)),
+                .int(durationMs),
+                .text(meta.startReason.rawValue),
+                .text(meta.endReason.rawValue),
+                .text(meta.micUID),
+                .optional(meta.micName),
+                .optional(meta.micModelUID),
+                .blob(audio.data),
+                .text(audio.format),
+                .int(Int64(audio.sampleRate)),
+                .int(Int64(audio.data.count)),
+                .optional(meta.targetAppBundleID),
+                .optional(meta.targetAppName),
+                .int(Int64(Schema.currentVersion)),
+                .text(meta.appVersion),
+                .text(now),
+                .text(now),
+            ])
+        return db.lastInsertRowID
+    }
+
+    public func markTranscribed(id: Int64, text: String, recognizer: String) throws {
+        let now = Timestamps.string(Date())
+        try db.query("""
+            UPDATE chunks SET status = 'transcribed', raw_text = ?, recognizer = ?, transcribed_at = ?,
+                error = NULL, updated_at = ? WHERE id = ?
+            """, [.text(text), .text(recognizer), .text(now), .text(now), .int(id)])
+    }
+
+    public func markError(id: Int64, message: String) throws {
+        try db.query("UPDATE chunks SET status = 'error', error = ?, updated_at = ? WHERE id = ?",
+                     [.text(message), .text(Timestamps.string(Date())), .int(id)])
+    }
+
+    public func chunk(id: Int64) throws -> ChunkSummary? {
+        try summaries(where: "id = ?", [.int(id)]).first
+    }
+
+    public func latest() throws -> ChunkSummary? {
+        try summaries(where: "1 = 1 ORDER BY id DESC LIMIT 1", []).first
+    }
+
+    public func audio(id: Int64) throws -> (data: Data, format: String, sampleRate: Int)? {
+        guard let row = try db.query("SELECT audio, audio_format, audio_sample_rate FROM chunks WHERE id = ?",
+                                     [.int(id)]).first else { return nil }
+        return (row[0].blob ?? Data(), row[1].text ?? "", Int(row[2].int ?? 0))
+    }
+
+    /// Bytes recorded per local day for the last `days` days, oldest first.
+    /// Days without recordings are included with 0.
+    public func dailyBytes(days: Int, now: Date = Date(), timeZone: TimeZone = .current) throws -> [(day: String, bytes: Int64)] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let wanted = (0..<days).reversed().map { offset in
+            Timestamps.localDay(calendar.date(byAdding: .day, value: -offset, to: now)!, timeZone: timeZone)
+        }
+        let rows = try db.query("""
+            SELECT local_day, SUM(audio_bytes + LENGTH(COALESCE(raw_text, ''))) FROM chunks
+            WHERE local_day >= ? GROUP BY local_day
+            """, [.text(wanted.first!)])
+        var byDay: [String: Int64] = [:]
+        for row in rows {
+            if let day = row[0].text { byDay[day] = row[1].int ?? 0 }
+        }
+        return wanted.map { ($0, byDay[$0] ?? 0) }
+    }
+
+    public func count() throws -> Int {
+        Int(try db.query("SELECT COUNT(*) FROM chunks").first?.first?.int ?? 0)
+    }
+
+    /// Deletes every recording, transcript and label, then shrinks the file.
+    /// Trained models are kept.
+    public func deleteAllRecordings() throws {
+        try db.transaction {
+            try db.execute("DELETE FROM labels")
+            try db.execute("DELETE FROM dataset_days")
+            try db.execute("DELETE FROM chunks")
+        }
+        try db.execute("VACUUM")
+        try db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    }
+
+    /// Size on disk: the database file plus its write-ahead log.
+    public nonisolated func sizeOnDisk() -> Int64 {
+        [path, path + "-wal"].reduce(0) { total, file in
+            let size = (try? FileManager.default.attributesOfItem(atPath: file)[.size] as? NSNumber)?.int64Value ?? 0
+            return total + size
+        }
+    }
+
+    private func summaries(where clause: String, _ values: [SQLValue]) throws -> [ChunkSummary] {
+        try db.query("""
+            SELECT id, status, error, raw_text, duration_ms, end_reason, ended_at, audio_format,
+                audio_sample_rate, audio_bytes FROM chunks WHERE \(clause)
+            """, values).map { row in
+            ChunkSummary(
+                id: row[0].int ?? 0, status: row[1].text ?? "", error: row[2].text, rawText: row[3].text,
+                durationMs: row[4].int ?? 0, endReason: row[5].text ?? "",
+                endedAt: Timestamps.date(row[6].text ?? "") ?? .distantPast, audioFormat: row[7].text ?? "",
+                audioSampleRate: Int(row[8].int ?? 0), audioBytes: row[9].int ?? 0)
+        }
+    }
+}
+
+/// Times are stored as UTC ISO 8601 with milliseconds; days as the local
+/// calendar date of the recording.
+public enum Timestamps {
+    public static func string(_ date: Date) -> String {
+        date.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))
+    }
+
+    public static func date(_ string: String) -> Date? {
+        try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(string)
+    }
+
+    public static func localDay(_ date: Date, timeZone: TimeZone) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year!, parts.month!, parts.day!)
+    }
+}
+
+/// Turns a thought into text. One per thought: it's fed audio while the
+/// thought is in progress, then asked for the final text.
+public protocol ThoughtTranscription: Sendable {
+    /// Which engine produced the text, stored with the row.
+    var recognizer: String { get }
+    /// The final text for the audio up to `seconds` from the thought's
+    /// first sample (the pre-roll included).
+    func finish(through seconds: Double) async throws -> String
+}
+
+/// The production save path: audio first, then text.
+public struct ChunkRecorder: Sendable {
+    public let store: ChunkStore
+
+    public init(store: ChunkStore) {
+        self.store = store
+    }
+
+    /// Encodes and saves the audio as a pending row, then waits for the text
+    /// and marks the row transcribed or error. Returns the row ID, or nil if
+    /// even the pending row couldn't be written.
+    @discardableResult
+    public func record(_ thought: CapturedThought, meta: ChunkMeta, transcription: (any ThoughtTranscription)?,
+                       saved: (@Sendable (Int64) -> Void)? = nil) async -> Int64? {
+        let audio = AudioEncoding.encode(samples: thought.samples, sampleRate: thought.sampleRate)
+        let durationMs = Int64((thought.duration * 1000).rounded())
+        guard let id = try? await store.insertPending(meta: meta, audio: audio, durationMs: durationMs) else {
+            return nil
+        }
+        saved?(id)
+        guard let transcription else {
+            try? await store.markError(id: id, message: "No speech recognizer was running for this thought.")
+            return id
+        }
+        do {
+            let text = try await transcription.finish(through: thought.duration)
+            try await store.markTranscribed(id: id, text: text, recognizer: transcription.recognizer)
+        } catch {
+            try? await store.markError(id: id, message: "Speech recognition failed: \(error)")
+        }
+        return id
+    }
+}

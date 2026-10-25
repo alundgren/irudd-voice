@@ -11,8 +11,15 @@ struct SetupTests {
     @Test func clipboardIsOptional() {
         let checklist = SetupChecklist(permissions: [
             .microphone: .granted, .speechRecognition: .granted, .accessibility: .granted, .clipboard: .denied,
-        ], micPicked: true)
+        ], micPicked: true, speechReady: true)
         #expect(checklist.canFinish)
+    }
+
+    @Test func speechFilesMustBeInstalled() {
+        let checklist = SetupChecklist(permissions: [
+            .microphone: .granted, .speechRecognition: .granted, .accessibility: .granted,
+        ], micPicked: true, speechReady: false)
+        #expect(!checklist.canFinish)
     }
 
     @Test func aMicMustBePicked() {

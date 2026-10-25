@@ -24,8 +24,21 @@ struct ThoughtDetectorTests {
     }
 
     func started(_ events: [ThoughtEvent]) -> ThoughtStartReason? {
-        for case .started(let reason) in events { return reason }
+        for case .started(let reason, _) in events { return reason }
         return nil
+    }
+
+    /// Everything streamed for live recognition: pre-roll, then audio events.
+    func streamed(_ events: [ThoughtEvent]) -> [Float] {
+        var out: [Float] = []
+        for event in events {
+            switch event {
+            case .started(_, let preRoll): out += preRoll
+            case .audio(let samples): out += samples
+            case .ended: break
+            }
+        }
+        return out
     }
 
     @Test func startupZerosAreNotAMute() {
@@ -141,6 +154,33 @@ struct ThoughtDetectorTests {
         #expect(thought.endReason == .micLost)
         #expect(thought.samples.count == 2000 + 700)
         #expect(d.finish(.micLost).isEmpty)
+    }
+
+    @Test func streamedAudioStartsWithTheThoughtAndCoversIt() {
+        let d = detector()
+        _ = d.process(speech(1500))
+        _ = d.process(zeros(3000))
+        var events = d.process(speech(700))
+        events += d.process(speech(300, level: 0.2))
+        events += d.process(zeros(400))
+        let thought = try! #require(ended(events))
+        let live = streamed(events)
+        #expect(live.count >= thought.samples.count)
+        #expect(Array(live.prefix(thought.samples.count)) == thought.samples)
+    }
+
+    @Test func eventsComeInOrder() {
+        let d = detector()
+        _ = d.process(speech(1500))
+        _ = d.process(zeros(3000))
+        // Start, talk, mute: all inside one batch.
+        let events = d.process(speech(500) + zeros(400))
+        guard events.count == 3,
+              case .started = events[0], case .audio = events[1], case .ended = events[2]
+        else {
+            Issue.record("unexpected events: \(events)")
+            return
+        }
     }
 
     @Test func preRollIsShorterRightAfterTheStreamOpens() {

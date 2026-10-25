@@ -41,6 +41,17 @@ struct SetupView: View {
                 .padding(6)
             }
 
+            GroupBox("3. English speech") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Apple's speech recognition runs on this Mac. It needs its English files once.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    SpeechFilesRow()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
+            }
+
             HStack {
                 if !checklist.missingRequired.isEmpty {
                     Text("Allow \(checklist.missingRequired.map(\.title).formatted(.list(type: .and))) to finish.")
@@ -48,6 +59,10 @@ struct SetupView: View {
                         .foregroundStyle(.secondary)
                 } else if !checklist.micPicked {
                     Text("Pick a mic to finish.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if !checklist.speechReady {
+                    Text("Download the speech files to finish.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }

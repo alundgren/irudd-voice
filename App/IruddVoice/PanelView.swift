@@ -65,13 +65,13 @@ struct PanelView: View {
                 Text("Preview while talking").font(.subheadline.weight(.semibold))
             }
 
+            if model.hasCompletedSetup, model.speechFiles != .installed {
+                SpeechFilesRow()
+            }
+
             Section {
-                if let last = model.lastThought {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("\(last.duration, format: .number.precision(.fractionLength(1))) s of audio, ended by \(last.endReason.description)")
-                        Text("\(last.endedAt, style: .relative) ago · not saved yet (saving comes next)")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                if let last = model.lastChunk {
+                    LastDictation(chunk: last)
                 } else {
                     Text("Nothing dictated yet.")
                         .foregroundStyle(.secondary)
@@ -80,24 +80,86 @@ struct PanelView: View {
                 Text("Last dictation").font(.subheadline.weight(.semibold))
             }
 
+            if let error = model.databaseError {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+
             Divider()
 
             HStack {
+                Text("Database \(model.databaseSize.formatted(.byteCount(style: .file)))")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help(model.databasePath)
+                Spacer()
                 Button("Settings…") {
                     NSApp.activate()
                     openSettings()
                 }
-                Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
             }
             .controlSize(.small)
         }
         .padding(14)
         .frame(width: 320)
+        .task { await model.refreshDatabaseInfo() }
     }
 
     private func open(_ id: String) {
         NSApp.activate()
         openWindow(id: id)
+    }
+}
+
+private struct LastDictation: View {
+    let chunk: ChunkSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            switch chunk.status {
+            case "transcribed":
+                Text(chunk.rawText?.isEmpty == false ? chunk.rawText! : "(nothing recognised)")
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            case "pending":
+                Text("Recognising…").foregroundStyle(.secondary)
+            default:
+                Text(chunk.error ?? "Something went wrong.").foregroundStyle(.red).lineLimit(3)
+            }
+            Text("\(Double(chunk.durationMs) / 1000, format: .number.precision(.fractionLength(1))) s · \(chunk.endedAt, style: .relative) ago · audio saved")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Shown when Apple's speech files are missing after setup.
+struct SpeechFilesRow: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        HStack(spacing: 8) {
+            switch model.speechFiles {
+            case .checking:
+                ProgressView().controlSize(.small)
+                Text("Checking speech files…").foregroundStyle(.secondary)
+            case .downloading(let fraction):
+                ProgressView(value: fraction).frame(maxWidth: .infinity)
+                Text(fraction, format: .percent.precision(.fractionLength(0)))
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            case .installed:
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text("English speech files installed")
+            case .missing:
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text("Apple's English speech files are needed to turn speech into text.")
+                    .font(.callout).fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Download") { model.installSpeechFiles() }
+            case .failed(let message):
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+                Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Try Again") { model.installSpeechFiles() }
+            }
+        }
     }
 }

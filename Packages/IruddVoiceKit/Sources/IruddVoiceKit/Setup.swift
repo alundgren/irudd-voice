@@ -40,10 +40,13 @@ public enum PermissionState: Sendable, Equatable {
 public struct SetupChecklist: Sendable, Equatable {
     public var permissions: [Permission: PermissionState]
     public var micPicked: Bool
+    /// Apple's English speech files are installed.
+    public var speechReady: Bool
 
-    public init(permissions: [Permission: PermissionState], micPicked: Bool = false) {
+    public init(permissions: [Permission: PermissionState], micPicked: Bool = false, speechReady: Bool = false) {
         self.permissions = permissions
         self.micPicked = micPicked
+        self.speechReady = speechReady
     }
 
     public func state(of permission: Permission) -> PermissionState {
@@ -56,6 +59,6 @@ public struct SetupChecklist: Sendable, Equatable {
     }
 
     public var canFinish: Bool {
-        missingRequired.isEmpty && micPicked
+        missingRequired.isEmpty && micPicked && speechReady
     }
 }

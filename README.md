@@ -7,9 +7,9 @@ is kept in one SQLite file, so the cleanup model can later be trained on
 your own voice and words.
 
 **Status:** early. This version has the menu-bar app, first-run setup, the
-installer and mic capture (pick a mic, the mute button or a hotkey starts
-and ends a thought). Saving, speech-to-text, pasting, cleanup and training
-come next.
+installer, mic capture (pick a mic; the mute button or a hotkey starts and
+ends a thought), and saving: every thought's audio and Apple's text go into
+the database. Pasting, cleanup and training come next.
 
 ## What you need
 
@@ -75,9 +75,10 @@ IRUDD_VOICE_SIGNING_IDENTITY="My Cert" ./install.sh
 
 ## Privacy
 
-- Audio and text are stored in
+- Audio (16 kHz FLAC) and text are stored in
   `~/Library/Application Support/irudd-voice/voice.sqlite`. Nothing is
   deleted automatically. You can delete everything from Settings → Data.
+  See [docs/database.md](docs/database.md).
 - Speech recognition uses Apple's on-device engine. Cleanup uses a local
   model.
 - **Labeling for training sends text to a cloud model.** When you start a
@@ -98,6 +99,16 @@ Third-party parts used in later versions:
 | [mlx-lm](https://github.com/ml-explore/mlx-lm) | MIT | Training the cleanup model |
 | Qwen3.5 (2B, 4B), Gemma 4 E2B | Apache-2.0 | Cleanup model weights, downloaded separately |
 
+## Command line
+
+The `irudd-voice` command reads the same database. It needs
+[uv](https://docs.astral.sh/uv/).
+
+```sh
+cd cli
+uv run irudd-voice stats
+```
+
 ## Development
 
 Everything runs locally. There's no CI.
@@ -107,14 +118,16 @@ Everything runs locally. There's no CI.
 ```
 
 This runs the logic tests (`swift test` in `Packages/IruddVoiceKit`), the
-installer tests with fake system tools, the signing-certificate test with a
-throwaway keychain, and a build of the app. None of them open the app.
+CLI tests against the app's real database code, the installer tests with
+fake system tools, the signing-certificate test with a throwaway keychain,
+and a build of the app. None of them open the app.
 Checks that need the real app are done by hand.
 
 | Folder | What's there |
 | --- | --- |
 | `App/` | The SwiftUI menu-bar app (Xcode project) |
 | `Packages/IruddVoiceKit/` | App logic with no UI, tested headless |
+| `cli/` | The `irudd-voice` command (Python, uv) |
 | `tools/boya-probe/` | Command-line tool that finds out what a mic's mute button does |
 | `docs/` | UX decisions and hardware notes |
 | `tests/` | Installer and signing tests |
