@@ -385,6 +385,17 @@ def squash(text: str) -> str:
 # ---- The checks --------------------------------------------------------------
 
 
+def first_sentence_end(text: str) -> str | None:
+    """The mark that ends the first sentence: the first `.`, `!` or `?`
+    followed by whitespace or the end of the text. A dot inside a name
+    (`install.sh`) or a number (`3.5`) doesn't end a sentence."""
+    text = text.rstrip()
+    for i, char in enumerate(text):
+        if char in ".!?" and (i + 1 == len(text) or text[i + 1].isspace()):
+            return char
+    return None
+
+
 def check(
     transcript: str,
     cleaned: str,
@@ -439,7 +450,7 @@ def check(
         (head[0] in HELPER_VERBS and head[1] in (PERSONS if head[0] in ("do", "have") else PRONOUNS))
         or (head[0] in QUESTION_WORDS and head[1] in HELPER_VERBS)
     )
-    if asks and out and not cleaned.rstrip().endswith("?"):
+    if asks and out and first_sentence_end(cleaned) != "?":
         failures.add("question")
 
     # numbers: exactly the numbers the speaker kept (corrected-away ones don't count).

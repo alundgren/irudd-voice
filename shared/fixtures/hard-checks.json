@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "about": "Every hard-check implementation (Swift app, Python CLI) must give exactly these results, failures in the order dropped, answers, question, numbers, negation, identifiers, new_words. 'replies' test reading the model's raw reply (hit_limit = generation stopped at max_tokens); 'checks' test the checks.",
   "replies": [
     {
@@ -814,6 +814,45 @@
       "cleaned": "Can you run it?\u001c",
       "vocabulary": [],
       "failures": []
+    },
+    {
+      "name": "question then more sentences",
+      "transcript": "what was wrong the installer asks xcode to sign everything",
+      "cleaned": "What was wrong? The installer asks Xcode to sign everything.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "first sentence of a question became a statement",
+      "transcript": "is it ready we can ship it",
+      "cleaned": "It is ready. We can ship it?",
+      "vocabulary": [],
+      "failures": [
+        "question"
+      ]
+    },
+    {
+      "name": "dot inside a name does not end the question",
+      "transcript": "can you open install.sh now",
+      "cleaned": "Can you open install.sh now?",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "decimal point does not end the question",
+      "transcript": "is it 3.5 or 4 seconds",
+      "cleaned": "Is it 3.5 or 4 seconds?",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "question with no sentence mark",
+      "transcript": "can you run it",
+      "cleaned": "Can you run it",
+      "vocabulary": [],
+      "failures": [
+        "question"
+      ]
     }
   ]
 }
