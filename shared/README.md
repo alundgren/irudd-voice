@@ -59,14 +59,36 @@ Bump `version` when the meaning changes; each label row stores it.
 Work through these in order:
 
 1. If the reply contains any of `<think>`, `</think>`, `<|channel>`,
-   `<channel|>`, `<|think|>` → `think_tags`.
+   `<channel|>`, `<|think|>` → `think_tags`. Search the UTF-8 bytes (or
+   code points), not user-perceived characters: `<think>` followed by a
+   combining mark still counts.
 2. Trim whitespace. If the whole reply is a ``` fence (optionally
    ```` ```json ````), take what's inside it, trimmed.
-3. If that doesn't parse as JSON: `cut_off` when generation stopped at
-   `max_tokens`, otherwise `malformed`. Trailing text after the object
-   doesn't parse, so it's `malformed`.
+3. If that doesn't parse as strict JSON (below): `cut_off` when generation
+   stopped at `max_tokens`, otherwise `malformed`. Trailing text after the
+   object doesn't parse, so it's `malformed`.
 4. If it isn't an object with a string under `output_key` → `malformed`.
 5. Otherwise the cleaned text is that string, trimmed.
+
+**Whitespace** is exactly the characters Python's `str.isspace()` accepts,
+which `str.strip()` trims and the fence pattern's `\s` matches: U+0009–U+000D,
+U+001C–U+001F, U+0020, U+0085, U+00A0, U+1680, U+2000–U+200A, U+2028,
+U+2029, U+202F, U+205F, U+3000. Zero-width space (U+200B) and the byte order
+mark (U+FEFF) are not whitespace.
+
+**Strict JSON** is RFC 8259 JSON as Python's `json.loads` reads it (raw
+control characters inside strings refused), and also refuses:
+
+- a key repeated in any object (keys compare by code points, so `café`
+  written two ways is two keys);
+- the constants `NaN`, `Infinity` and `-Infinity`;
+- a byte order mark before the JSON;
+- an escaped lone surrogate (`"\ud800"`, `"\udc00"`); an escaped pair
+  (`"\ud83d\ude00"`) is one character;
+- objects and arrays nested more than 100 deep (the top-level value is
+  depth 1).
+
+Numbers only have to match the grammar; their values don't matter.
 
 Any failure means the raw transcript is pasted instead.
 
@@ -134,6 +156,15 @@ Compare numbers as decimal strings.
 In the scale step, "`current` or 1" means 1 only when `current` is unset; a
 `current` of 0 stays 0.
 
+**Big numbers.** Numbers are compared as decimal strings without leading
+zeros (`007` → `7`), and digit strings have no length limit. A spelled-out
+number can't pass 2^53 (9007199254740992): if a scale word would make
+`current` or `total` larger, the number ends at that word and is
+*unusable*. The same goes for a number whose final `total + current` is
+over 2^53. An unusable number matches nothing: it isn't joined into runs
+and is always left over, so it fails `numbers` on either side. (A 64-bit
+implementation can treat an overflowing multiplication as "over 2^53".)
+
 **Fillers.** `FILLERS` words anywhere, and two-word fillers (`you know`,
 `kind of`, …) wherever both words appear together, don't count as content.
 `strip_fillers` removes them from the start only.
@@ -151,7 +182,8 @@ The checks:
   `max_output_words_ratio` × transcript words + `max_output_words_slack` words.
 - `question`: after leading fillers, the transcript's first two words are a
   helper verb then a pronoun (`can you`, `is it`), or a question word then
-  a helper verb (`why is`, `how do`), and the output doesn't end with `?`.
+  a helper verb (`why is`, `how do`), and the output's last code point
+  after trimming trailing whitespace isn't `?`.
 - `numbers`: `match_numbers(numbers in the transcript's non-ignored words,
   numbers in the output)` leaves anything unmatched on either side. So a
   corrected-away number in the output fails, as does a dropped or changed one.

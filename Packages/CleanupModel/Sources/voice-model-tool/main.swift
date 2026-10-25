@@ -1,0 +1,564 @@
+import CleanupModel
+import Foundation
+import IruddVoiceKit
+import MLX
+
+// voice-model-tool: runs the cleanup model from the terminal, with the same
+// Swift code the XPC helper uses. No windows, no mic, no XPC.
+//
+//   generate --model DIR [--inputs evals/parity.jsonl] --out FILE [--max-tokens 96]
+//   compare  --reference FILE --swift FILE [--model DIR]
+//   eval     --model DIR --set questions|transcripts [--out FILE]
+//   bench    --model DIR [--runs 10] [--minutes N] [--out FILE]
+//   prompt-check --model DIR --reference FILE   (prompt tokens only; no weights loaded)
+//   xpc-check --model DIR    (the helper's handler over an in-process XPC listener)
+//
+// Common options: --prompt FILE (default shared/cleanup-prompt.json),
+// --no-verify (skip manifest checksums).
+
+let repoFolder = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()  // voice-model-tool
+    .deletingLastPathComponent()  // Sources
+    .deletingLastPathComponent()  // CleanupModel
+    .deletingLastPathComponent()  // Packages
+    .deletingLastPathComponent()  // repo
+
+struct ToolError: Error, CustomStringConvertible {
+    var description: String
+    init(_ description: String) { self.description = description }
+}
+
+/// `--name value` options and `--flag` switches.
+struct Options {
+    var values: [String: String] = [:]
+    var flags: Set<String> = []
+
+    init(_ arguments: ArraySlice<String>) throws {
+        var rest = arguments[...]
+        while let argument = rest.popFirst() {
+            guard argument.hasPrefix("--") else { throw ToolError("unexpected argument \(argument)") }
+            let name = String(argument.dropFirst(2))
+            if ["no-verify"].contains(name) {
+                flags.insert(name)
+            } else {
+                guard let value = rest.popFirst() else { throw ToolError("--\(name) needs a value") }
+                values[name] = value
+            }
+        }
+    }
+
+    func url(_ name: String, default fallback: URL? = nil) throws -> URL {
+        if let value = values[name] { return URL(fileURLWithPath: value) }
+        if let fallback { return fallback }
+        throw ToolError("--\(name) is required")
+    }
+
+    func int(_ name: String, default fallback: Int) throws -> Int {
+        guard let value = values[name] else { return fallback }
+        guard let number = Int(value) else { throw ToolError("--\(name) must be a whole number") }
+        return number
+    }
+
+    func double(_ name: String, default fallback: Double) throws -> Double {
+        guard let value = values[name] else { return fallback }
+        guard let number = Double(value) else { throw ToolError("--\(name) must be a number") }
+        return number
+    }
+}
+
+/// One line of an evals/*.jsonl file.
+struct InputItem: Codable {
+    var id: String?
+    var transcript: String
+    var vocabulary: [String]?
+    var expected: String?
+}
+
+func readJSONL(_ url: URL) throws -> [InputItem] {
+    let text = try String(contentsOf: url, encoding: .utf8)
+    return try text.split(separator: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map {
+        try JSONDecoder().decode(InputItem.self, from: Data($0.utf8))
+    }
+}
+
+func writeJSON<T: Encodable>(_ value: T, to url: URL) throws {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try (encoder.encode(value) + Data("\n".utf8)).write(to: url)
+}
+
+func sha256(_ url: URL) throws -> String {
+    try ModelManifest.sha256(of: url)
+}
+
+func log(_ text: String) {
+    FileHandle.standardError.write(Data((text + "\n").utf8))
+}
+
+func footprint() -> (current: UInt64, peak: UInt64) { processFootprint() }
+
+func gigabytes(_ bytes: UInt64) -> Double {
+    (Double(bytes) / 1_073_741_824 * 100).rounded() / 100
+}
+
+func percentile(_ values: [Double], _ p: Double) -> Double {
+    let sorted = values.sorted()
+    guard !sorted.isEmpty else { return 0 }
+    // Nearest rank: p90 of 10 runs is the 9th fastest.
+    let rank = Int((p / 100 * Double(sorted.count)).rounded(.up))
+    return sorted[max(0, min(sorted.count - 1, rank - 1))]
+}
+
+func round3(_ value: Double) -> Double { (value * 1000).rounded() / 1000 }
+
+func makeEngine(_ options: Options) throws -> CleanupEngine {
+    let prompt = try CleanupPrompt.load(from: options.url("prompt", default: repoFolder.appendingPathComponent("shared/cleanup-prompt.json")))
+    return CleanupEngine(prompt: prompt)
+}
+
+// ---- generate ------------------------------------------------------------------
+
+/// Same layout as the Python `parity-reference` file (docs/models/parity-format.md).
+struct ParityFile: Codable {
+    struct Item: Codable {
+        var id: String
+        var transcript: String
+        var vocabulary: [String]
+        var prompt: String
+        var prompt_token_ids: [Int]
+        var generated_token_ids: [Int]
+        var stop_token_id: Int?
+        var text: String
+    }
+
+    var format: Int
+    var model_id: String
+    var manifest_sha256: String
+    var prompt_version: String
+    var inputs_sha256: String
+    var chat_template_options: [String: TemplateOption]
+    var max_new_tokens: Int
+    var stop_token_ids: [Int]
+    var runner: String?
+    var items: [Item]
+}
+
+func generate(_ options: Options) async throws {
+    let folder = try options.url("model")
+    let inputs = try options.url("inputs", default: repoFolder.appendingPathComponent("evals/parity.jsonl"))
+    let out = try options.url("out")
+    let maxTokens = try options.int("max-tokens", default: 96)
+    let engine = try makeEngine(options)
+    try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"))
+    let prompt = engine.prompt
+    var items: [ParityFile.Item] = []
+    for (index, item) in try readJSONL(inputs).enumerated() {
+        let terms = prompt.usedTerms(item.vocabulary ?? [])
+        let messages = prompt.messages(transcript: item.transcript, terms: terms)
+        let result = try await engine.generate(messages: messages, maxTokens: maxTokens)
+        let id = item.id ?? String(index + 1)
+        log("\(id): \(result.promptTokens.count) prompt tokens, \(result.tokens.count) generated, "
+            + String(format: "%.2f s", result.promptSeconds + result.generateSeconds))
+        items.append(.init(
+            id: id, transcript: item.transcript, vocabulary: item.vocabulary ?? [],
+            prompt: try await engine.decode(result.promptTokens),
+            prompt_token_ids: result.promptTokens, generated_token_ids: result.tokens,
+            stop_token_id: result.stopToken, text: result.text))
+    }
+    let manifest = try require(await engine.manifest)
+    try writeJSON(ParityFile(
+        format: 1, model_id: manifest.id,
+        manifest_sha256: try sha256(folder.appendingPathComponent(ModelManifest.fileName)),
+        prompt_version: prompt.version, inputs_sha256: try sha256(inputs),
+        chat_template_options: prompt.chatTemplateOptions, max_new_tokens: maxTokens,
+        stop_token_ids: await engine.stopTokens.sorted(), runner: "mlx-swift-lm 3.32.3",
+        items: items), to: out)
+    log("wrote \(out.path)")
+}
+
+func require<T>(_ value: T?) throws -> T {
+    guard let value else { throw ToolError("missing value") }
+    return value
+}
+
+// ---- compare -------------------------------------------------------------------
+
+/// Compares a Swift `generate` file with a Python reference. Prints OK, or the
+/// first differing token (prompt first, then generated) with both IDs and
+/// their decoded text. Exits 1 on any difference.
+func compare(_ options: Options) async throws -> Bool {
+    let reference = try JSONDecoder().decode(ParityFile.self, from: Data(contentsOf: options.url("reference")))
+    let swift = try JSONDecoder().decode(ParityFile.self, from: Data(contentsOf: options.url("swift")))
+    var tokenizer: TokenText?
+    if let model = options.values["model"] {
+        tokenizer = try await TokenText(folder: URL(fileURLWithPath: model))
+    }
+    func show(_ id: Int?) -> String {
+        guard let id else { return "(none)" }
+        guard let tokenizer else { return "\(id)" }
+        return "\(id) \(String(reflecting: tokenizer.text([id])))"
+    }
+    var ok = true
+    if reference.manifest_sha256 != swift.manifest_sha256 {
+        print("manifest differs: the files are from different model folders")
+        ok = false
+    }
+    if reference.inputs_sha256 != swift.inputs_sha256 || reference.max_new_tokens != swift.max_new_tokens {
+        print("inputs or max_new_tokens differ")
+        ok = false
+    }
+    if reference.stop_token_ids != swift.stop_token_ids {
+        print("stop tokens differ: python \(reference.stop_token_ids), swift \(swift.stop_token_ids)")
+        ok = false
+    }
+    let swiftItems = Dictionary(swift.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    var identical = 0
+    for item in reference.items {
+        guard let other = swiftItems[item.id] else {
+            print("\(item.id): missing from the Swift file")
+            ok = false
+            continue
+        }
+        for (label, a, b) in [("prompt", item.prompt_token_ids, other.prompt_token_ids),
+                              ("generated", item.generated_token_ids, other.generated_token_ids)] {
+            guard a != b else { continue }
+            let index = zip(a, b).enumerated().first { $0.element.0 != $0.element.1 }?.offset ?? min(a.count, b.count)
+            let pythonID = index < a.count ? a[index] : nil
+            let swiftID = index < b.count ? b[index] : nil
+            print("\(item.id): \(label) tokens differ at index \(index): python \(show(pythonID)), swift \(show(swiftID))")
+            if label == "generated" {
+                print("  python text: \(String(reflecting: item.text))")
+                print("  swift text:  \(String(reflecting: other.text))")
+            }
+            ok = false
+            break
+        }
+        if item.prompt_token_ids == other.prompt_token_ids && item.generated_token_ids == other.generated_token_ids {
+            if item.stop_token_id == other.stop_token_id {
+                identical += 1
+            } else {
+                print("\(item.id): stop token differs: python \(show(item.stop_token_id)), swift \(show(other.stop_token_id))")
+                ok = false
+            }
+        }
+    }
+    print(ok ? "OK: \(reference.items.count) inputs, identical tokens (\(reference.model_id))"
+        : "MISMATCH: \(identical) of \(reference.items.count) inputs identical (\(reference.model_id))")
+    return ok
+}
+
+/// Builds every reference item's prompt with the Swift prompt builder and
+/// tokenizer and compares the token IDs. Loads only the tokenizer.
+func promptCheck(_ options: Options) async throws -> Bool {
+    let reference = try JSONDecoder().decode(ParityFile.self, from: Data(contentsOf: options.url("reference")))
+    let prompt = try CleanupPrompt.load(from: options.url("prompt", default: repoFolder.appendingPathComponent("shared/cleanup-prompt.json")))
+    let tokenizer = try await TokenText(folder: options.url("model"))
+    var ok = true
+    for item in reference.items {
+        let ids = try tokenizer.promptTokens(prompt.messages(transcript: item.transcript, terms: prompt.usedTerms(item.vocabulary)), prompt: prompt)
+        guard ids != item.prompt_token_ids else { continue }
+        ok = false
+        let index = zip(ids, item.prompt_token_ids).enumerated().first { $0.element.0 != $0.element.1 }?.offset
+            ?? min(ids.count, item.prompt_token_ids.count)
+        let python = index < item.prompt_token_ids.count ? item.prompt_token_ids[index] : nil
+        let swift = index < ids.count ? ids[index] : nil
+        print("\(item.id): prompt differs at token \(index): python \(python.map { "\($0) \(String(reflecting: tokenizer.text([$0])))" } ?? "(end)"), "
+            + "swift \(swift.map { "\($0) \(String(reflecting: tokenizer.text([$0])))" } ?? "(end)")")
+        print("  python: \(String(reflecting: String(tokenizer.text(Array(item.prompt_token_ids[max(0, index - 8)...])).prefix(160))))")
+        print("  swift:  \(String(reflecting: String(tokenizer.text(Array(ids[max(0, index - 8)...])).prefix(160))))")
+    }
+    print(ok ? "OK: \(reference.items.count) prompts identical" : "MISMATCH")
+    return ok
+}
+
+// ---- eval ----------------------------------------------------------------------
+
+struct EvalReport: Codable {
+    struct Item: Codable {
+        var id: String
+        var transcript: String
+        var reply: String
+        var cleaned: String?
+        var failure: String?
+        var checks: [String]
+        var expected: String?
+        var matchesExpected: Bool?
+        var seconds: Double
+    }
+
+    var model_id: String
+    var set: String
+    var prompt_version: String
+    var runner: String
+    var items_total: Int
+    var items_failed: Int
+    var reply_failures: [String: Int]
+    var check_failures: [String: Int]
+    var exact_matches: Int?
+    var items: [Item]
+}
+
+/// Cleans every transcript in evals/<set>.jsonl through the Swift prompt,
+/// parser and hard checks. An item fails when the reply can't be read or
+/// any hard check fails.
+func evaluate(_ options: Options) async throws -> Bool {
+    let folder = try options.url("model")
+    guard let set = options.values["set"], ["questions", "transcripts"].contains(set) else {
+        throw ToolError("--set must be questions or transcripts")
+    }
+    let inputs = try options.url("inputs", default: repoFolder.appendingPathComponent("evals/\(set).jsonl"))
+    let engine = try makeEngine(options)
+    try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"))
+    let prompt = engine.prompt
+    var items: [EvalReport.Item] = []
+    var replyFailures: [String: Int] = [:]
+    var checkFailures: [String: Int] = [:]
+    for (index, input) in try readJSONL(inputs).enumerated() {
+        let id = input.id ?? String(index + 1)
+        let terms = prompt.usedTerms(input.vocabulary ?? [])
+        let result = try await engine.clean(transcript: input.transcript, vocabulary: terms)
+        let reply = CleanupReply.parse(result.text, hitLimit: result.hitLimit, key: prompt.outputKey)
+        var checks: [String] = []
+        if let cleaned = reply.cleaned {
+            checks = HardChecks.check(
+                transcript: input.transcript, cleaned: cleaned, vocabulary: terms,
+                maxWordsRatio: prompt.checks.maxOutputWordsRatio, maxWordsSlack: prompt.checks.maxOutputWordsSlack)
+        }
+        if let failure = reply.failure { replyFailures[failure.rawValue, default: 0] += 1 }
+        for check in checks { checkFailures[check, default: 0] += 1 }
+        let failed = reply.failure != nil || !checks.isEmpty
+        log("\(id): \(failed ? "FAIL \(reply.failure?.rawValue ?? checks.joined(separator: ","))" : "ok") "
+            + "\(String(reflecting: reply.cleaned ?? result.text))")
+        items.append(.init(
+            id: id, transcript: input.transcript, reply: result.text, cleaned: reply.cleaned,
+            failure: reply.failure?.rawValue, checks: checks, expected: input.expected,
+            matchesExpected: input.expected.map { $0 == reply.cleaned },
+            seconds: round3(result.promptSeconds + result.generateSeconds)))
+    }
+    let failed = items.filter { $0.failure != nil || !$0.checks.isEmpty }.count
+    let exact = items.contains { $0.expected != nil } ? items.filter { $0.matchesExpected == true }.count : nil
+    let manifest = try require(await engine.manifest)
+    let report = EvalReport(
+        model_id: manifest.id, set: set, prompt_version: prompt.version, runner: "swift (mlx-swift-lm 3.32.3)",
+        items_total: items.count, items_failed: failed, reply_failures: replyFailures,
+        check_failures: checkFailures, exact_matches: exact, items: items)
+    if let out = options.values["out"] {
+        try writeJSON(report, to: URL(fileURLWithPath: out))
+    }
+    print("\(manifest.id) \(set): \(items.count - failed)/\(items.count) passed, \(failed) failed"
+        + (exact.map { ", \($0) exact matches" } ?? "")
+        + (replyFailures.isEmpty ? "" : ", reply failures \(replyFailures)")
+        + (checkFailures.isEmpty ? "" : ", check failures \(checkFailures)"))
+    return failed == 0
+}
+
+// ---- bench ---------------------------------------------------------------------
+
+struct BenchReport: Codable {
+    struct Soak: Codable {
+        var minutes: Double
+        var cleanups: Int
+        var p50_seconds: Double
+        var p90_seconds: Double
+        var slowest_seconds: Double
+        var slowest_last_minute_seconds: Double
+        var footprint_end_gb: Double
+    }
+
+    var model_id: String
+    var runner: String
+    var cold_verify_seconds: Double
+    var cold_load_seconds: Double
+    var cold_warmup_seconds: Double
+    var warm_runs: [Double]
+    var warm_p50_seconds: Double
+    var warm_p90_seconds: Double
+    var runs_within_2s: Int
+    var generated_tokens: [Int]
+    var peak_footprint_gb: Double
+    var mlx_peak_gb: Double
+    var soak: Soak?
+}
+
+/// One cleanup the way the app will run it: generate, parse, hard checks.
+/// Returns the wall-clock seconds and the number of generated tokens.
+func timedCleanup(_ engine: CleanupEngine, _ transcript: String) async throws -> (Double, Int) {
+    let clock = ContinuousClock()
+    let start = clock.now
+    let result = try await engine.clean(transcript: transcript)
+    let prompt = engine.prompt
+    let reply = CleanupReply.parse(result.text, hitLimit: result.hitLimit, key: prompt.outputKey)
+    if let cleaned = reply.cleaned {
+        _ = HardChecks.check(transcript: transcript, cleaned: cleaned)
+    }
+    return ((clock.now - start).seconds, result.tokens.count)
+}
+
+func bench(_ options: Options) async throws {
+    let folder = try options.url("model")
+    let runs = try options.int("runs", default: 10)
+    let minutes = try options.double("minutes", default: 0)
+    let inputs = try readJSONL(try options.url("inputs", default: repoFolder.appendingPathComponent("evals/bench.jsonl")))
+    guard !inputs.isEmpty else { throw ToolError("no bench inputs") }
+    let engine = try makeEngine(options)
+    let cold = try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"))
+    log(String(format: "cold: verify %.2f s, load %.2f s, warm-up %.2f s", cold.verifySeconds, cold.loadSeconds, cold.warmupSeconds))
+
+    var warm: [Double] = []
+    var tokens: [Int] = []
+    for run in 0..<runs {
+        let (seconds, count) = try await timedCleanup(engine, inputs[run % inputs.count].transcript)
+        warm.append(round3(seconds))
+        tokens.append(count)
+        log(String(format: "run %d: %.3f s, %d tokens", run + 1, seconds, count))
+    }
+
+    var soak: BenchReport.Soak?
+    if minutes > 0 {
+        let clock = ContinuousClock()
+        let start = clock.now
+        let end = start + .seconds(minutes * 60)
+        var times: [Double] = []
+        var lastMinute: [Double] = []
+        var index = 0
+        while clock.now < end {
+            let (seconds, _) = try await timedCleanup(engine, inputs[index % inputs.count].transcript)
+            index += 1
+            times.append(seconds)
+            if end - clock.now < .seconds(60) { lastMinute.append(seconds) }
+            if index % 25 == 0 {
+                log(String(format: "soak: %d cleanups, %.1f min, footprint %.2f GB", index,
+                           (clock.now - start).seconds / 60, gigabytes(footprint().current)))
+            }
+        }
+        soak = .init(
+            minutes: round3((clock.now - start).seconds / 60), cleanups: times.count,
+            p50_seconds: round3(percentile(times, 50)), p90_seconds: round3(percentile(times, 90)),
+            slowest_seconds: round3(times.max() ?? 0), slowest_last_minute_seconds: round3(lastMinute.max() ?? 0),
+            footprint_end_gb: gigabytes(footprint().current))
+    }
+
+    let manifest = try require(await engine.manifest)
+    let report = BenchReport(
+        model_id: manifest.id, runner: "swift (mlx-swift-lm 3.32.3)",
+        cold_verify_seconds: round3(cold.verifySeconds), cold_load_seconds: round3(cold.loadSeconds),
+        cold_warmup_seconds: round3(cold.warmupSeconds), warm_runs: warm,
+        warm_p50_seconds: round3(percentile(warm, 50)), warm_p90_seconds: round3(percentile(warm, 90)),
+        runs_within_2s: warm.filter { $0 <= 2 }.count, generated_tokens: tokens,
+        peak_footprint_gb: gigabytes(footprint().peak), mlx_peak_gb: gigabytes(UInt64(Memory.peakMemory)),
+        soak: soak)
+    if let out = options.values["out"] {
+        try writeJSON(report, to: URL(fileURLWithPath: out))
+    }
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    print(String(decoding: try encoder.encode(report), as: UTF8.self))
+}
+
+// ---- xpc-check -----------------------------------------------------------------
+
+/// Runs the XPC helper's handler behind an anonymous in-process listener and
+/// drives it with `CleanupClient`, the way the app will: status, load, clean,
+/// unload. Exercises the real service code without launching anything.
+final class ListenerHost: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
+    let listener = NSXPCListener.anonymous()
+    let handler: CleanupServiceHandler
+
+    init(handler: CleanupServiceHandler) {
+        self.handler = handler
+        super.init()
+        listener.delegate = self
+        listener.resume()
+    }
+
+    func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
+        connection.exportedInterface = CleanupInterface.make()
+        connection.exportedObject = handler
+        connection.resume()
+        return true
+    }
+}
+
+func xpcCheck(_ options: Options) async throws -> Bool {
+    let folder = try options.url("model")
+    let verify = !options.flags.contains("no-verify")
+    let prompt = try CleanupPrompt.load(from: options.url("prompt", default: repoFolder.appendingPathComponent("shared/cleanup-prompt.json")))
+    let engine = CleanupEngine(prompt: prompt)
+    let host = ListenerHost(handler: CleanupServiceHandler(prompt: prompt, backend: engine))
+    let client = CleanupClient(endpoint: host.listener.endpoint)
+    var ok = true
+    func expect(_ condition: Bool, _ label: String) {
+        print("\(condition ? "ok  " : "FAIL") \(label)")
+        ok = ok && condition
+    }
+    expect(try await client.status().state == .empty, "starts empty")
+    let loaded = try await client.load(LoadRequest(folder: folder.path, verify: verify))
+    expect(loaded.status.state == .ready, "loads \(loaded.status.modelID ?? loaded.error ?? "?") in "
+        + String(format: "%.2f s", loaded.loadSeconds ?? 0))
+    let transcript = "um can you check why the build fails on port eight zero eight zero"
+    let response = try await client.clean(CleanRequest(transcript: transcript, vocabulary: ["SwiftUI"]))
+    let reply = CleanupReply.parse(response.reply ?? "", hitLimit: response.hitLimit, key: prompt.outputKey)
+    expect(response.error == nil && response.generatedTokens > 0,
+           "cleans: \(String(reflecting: reply.cleaned ?? response.reply ?? response.error ?? "")) "
+           + String(format: "(%.2f s)", response.promptSeconds + response.generateSeconds))
+
+    // A 768-token reply would take several seconds; the deadline stops it.
+    let clock = ContinuousClock()
+    var start = clock.now
+    let late = try await client.clean(CleanRequest(transcript: String(repeating: "and then the next step ", count: 60),
+                                                   deadlineSeconds: 0.3))
+    let lateTime = (clock.now - start).seconds
+    start = clock.now
+    let next = try await client.clean(CleanRequest(transcript: transcript))
+    expect(late.timedOut && late.reply == nil && lateTime < 1.5,
+           String(format: "stops at its deadline (0.3 s deadline, answered in %.2f s, %d tokens)", lateTime, late.generatedTokens))
+    expect(next.error == nil && (clock.now - start).seconds < 3,
+           String(format: "the next cleanup isn't held up (%.2f s)", (clock.now - start).seconds))
+
+    let status = try await client.status()
+    expect(status.state == .ready && (status.residentBytes ?? 0) > 0,
+           String(format: "status ready, %.2f GB resident", gigabytes(status.residentBytes ?? 0)))
+    expect(try await client.unload().state == .empty, "unloads")
+    let refused = try await client.clean(CleanRequest(transcript: "x"))
+    expect(refused.reply == nil && refused.error != nil, "refuses to clean when unloaded")
+
+    // Unload while a load is still running: nothing may stay loaded.
+    async let racing = client.load(LoadRequest(folder: folder.path, verify: verify))
+    try await Task.sleep(for: .milliseconds(150))
+    let unloaded = try await client.unload()
+    let raced = try await racing
+    let engineLoaded = await engine.isLoaded
+    let after = try await client.status().state
+    expect(unloaded.state == .empty && raced.error != nil && !engineLoaded && after == .empty,
+           "unload during a load leaves nothing loaded (load said: \(raced.error ?? "ready"))")
+
+    let bad = try await client.load(LoadRequest(modelID: "../voice"))
+    expect(bad.error != nil && bad.status.state == .empty, "refuses a bad model id and changes nothing")
+    return ok
+}
+
+// ---- main ----------------------------------------------------------------------
+
+let arguments = CommandLine.arguments
+guard arguments.count >= 2 else {
+    log("usage: voice-model-tool generate|compare|eval|bench [options]")
+    exit(2)
+}
+do {
+    let options = try Options(arguments.dropFirst(2))
+    switch arguments[1] {
+    case "generate": try await generate(options)
+    case "compare": exit(try await compare(options) ? 0 : 1)
+    case "eval": exit(try await evaluate(options) ? 0 : 1)
+    case "bench": try await bench(options)
+    case "prompt-check": exit(try await promptCheck(options) ? 0 : 1)
+    case "xpc-check": exit(try await xpcCheck(options) ? 0 : 1)
+    default:
+        log("unknown command \(arguments[1])")
+        exit(2)
+    }
+} catch {
+    log("error: \(error)")
+    exit(1)
+}

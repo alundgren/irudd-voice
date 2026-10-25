@@ -8,17 +8,67 @@
 
 /* Begin PBXBuildFile section */
 		A1000000000000000000B001 /* IruddVoiceKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000C001 /* IruddVoiceKit */; };
+		A2000000000000000000B001 /* CleanupModel in Frameworks */ = {isa = PBXBuildFile; productRef = A2000000000000000000C001 /* CleanupModel */; };
+		A2000000000000000000B002 /* IruddVoiceKit in Frameworks */ = {isa = PBXBuildFile; productRef = A2000000000000000000C002 /* IruddVoiceKit */; };
+		A2000000000000000000B003 /* cleanup-prompt.json in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000D002 /* cleanup-prompt.json */; };
+		A2000000000000000000B004 /* IruddVoiceCleanup.xpc in Embed XPC Services */ = {isa = PBXBuildFile; fileRef = A2000000000000000000D001 /* IruddVoiceCleanup.xpc */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A2000000000000000000F101 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A10000000000000000013001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A20000000000000000016001;
+			remoteInfo = IruddVoiceCleanup;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A2000000000000000000F201 /* Embed XPC Services */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/XPCServices";
+			dstSubfolderSpec = 16;
+			files = (
+				A2000000000000000000B004 /* IruddVoiceCleanup.xpc in Embed XPC Services */,
+			);
+			name = "Embed XPC Services";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		A1000000000000000000D001 /* irudd-voice.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "irudd-voice.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000D001 /* IruddVoiceCleanup.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = IruddVoiceCleanup.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000D002 /* cleanup-prompt.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = "cleanup-prompt.json"; path = "../shared/cleanup-prompt.json"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A2000000000000000000E002 /* Exceptions for "IruddVoiceCleanup" folder in "IruddVoiceCleanup" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = A20000000000000000016001 /* IruddVoiceCleanup */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A1000000000000000000E001 /* IruddVoice */ = {isa = PBXFileSystemSynchronizedRootGroup; path = IruddVoice; sourceTree = "<group>"; };
+		A2000000000000000000E001 /* IruddVoiceCleanup */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (A2000000000000000000E002 /* Exceptions for "IruddVoiceCleanup" folder in "IruddVoiceCleanup" target */, ); path = IruddVoiceCleanup; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		A2000000000000000000F001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A2000000000000000000B001 /* CleanupModel in Frameworks */,
+				A2000000000000000000B002 /* IruddVoiceKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A1000000000000000000F001 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -34,6 +84,8 @@
 			isa = PBXGroup;
 			children = (
 				A1000000000000000000E001 /* IruddVoice */,
+				A2000000000000000000E001 /* IruddVoiceCleanup */,
+				A2000000000000000000A003 /* Shared */,
 				A1000000000000000000A002 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -42,8 +94,17 @@
 			isa = PBXGroup;
 			children = (
 				A1000000000000000000D001 /* irudd-voice.app */,
+				A2000000000000000000D001 /* IruddVoiceCleanup.xpc */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A2000000000000000000A003 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				A2000000000000000000D002 /* cleanup-prompt.json */,
+			);
+			name = Shared;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -56,10 +117,12 @@
 				A10000000000000000015001 /* Sources */,
 				A1000000000000000000F001 /* Frameworks */,
 				A10000000000000000014001 /* Resources */,
+				A2000000000000000000F201 /* Embed XPC Services */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A2000000000000000000F102 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A1000000000000000000E001 /* IruddVoice */,
@@ -71,6 +134,30 @@
 			productName = IruddVoice;
 			productReference = A1000000000000000000D001 /* irudd-voice.app */;
 			productType = "com.apple.product-type.application";
+		};
+		A20000000000000000016001 /* IruddVoiceCleanup */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A20000000000000000012002 /* Build configuration list for PBXNativeTarget "IruddVoiceCleanup" */;
+			buildPhases = (
+				A20000000000000000015001 /* Sources */,
+				A2000000000000000000F001 /* Frameworks */,
+				A20000000000000000014001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A2000000000000000000E001 /* IruddVoiceCleanup */,
+			);
+			name = IruddVoiceCleanup;
+			packageProductDependencies = (
+				A2000000000000000000C001 /* CleanupModel */,
+				A2000000000000000000C002 /* IruddVoiceKit */,
+			);
+			productName = IruddVoiceCleanup;
+			productReference = A2000000000000000000D001 /* IruddVoiceCleanup.xpc */;
+			productType = "com.apple.product-type.xpc-service";
 		};
 /* End PBXNativeTarget section */
 
@@ -93,6 +180,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A10000000000000000011001 /* XCLocalSwiftPackageReference "../Packages/IruddVoiceKit" */,
+				A20000000000000000011001 /* XCLocalSwiftPackageReference "../Packages/CleanupModel" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A1000000000000000000A002 /* Products */;
@@ -100,11 +188,20 @@
 			projectRoot = "";
 			targets = (
 				A10000000000000000016001 /* IruddVoice */,
+				A20000000000000000016001 /* IruddVoiceCleanup */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		A20000000000000000014001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A2000000000000000000B003 /* cleanup-prompt.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A10000000000000000014001 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -115,6 +212,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		A20000000000000000015001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A10000000000000000015001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -124,7 +228,61 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		A2000000000000000000F102 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A20000000000000000016001 /* IruddVoiceCleanup */;
+			targetProxy = A2000000000000000000F101 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		A20000000000000000010003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = IruddVoiceCleanup/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IruddVoiceCleanup;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "MIT License";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.alundgren.irudd-voice.cleanup";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		A20000000000000000010004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = arm64;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = IruddVoiceCleanup/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IruddVoiceCleanup;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "MIT License";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.alundgren.irudd-voice.cleanup";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
 		A10000000000000000010001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -219,6 +377,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		A20000000000000000012002 /* Build configuration list for PBXNativeTarget "IruddVoiceCleanup" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A20000000000000000010003 /* Debug */,
+				A20000000000000000010004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		A10000000000000000012001 /* Build configuration list for PBXProject "IruddVoice" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -244,10 +411,23 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../Packages/IruddVoiceKit;
 		};
+		A20000000000000000011001 /* XCLocalSwiftPackageReference "../Packages/CleanupModel" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../Packages/CleanupModel;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		A1000000000000000000C001 /* IruddVoiceKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = IruddVoiceKit;
+		};
+		A2000000000000000000C001 /* CleanupModel */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A20000000000000000011001 /* XCLocalSwiftPackageReference "../Packages/CleanupModel" */;
+			productName = CleanupModel;
+		};
+		A2000000000000000000C002 /* IruddVoiceKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = IruddVoiceKit;
 		};

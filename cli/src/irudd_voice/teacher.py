@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
-from . import prompt
+from . import hardchecks, prompt
 
 TEACHER_DIR_PREFIX = "irudd-voice-teacher-"
 TIMEOUT_SECONDS = 300
@@ -124,15 +124,19 @@ def read_object(text: str | None, structured: object, schema_file: Path) -> dict
     """The reply object from its text (JSON, optionally in a ``` fence) or
     the already-parsed structured output; None unless it fits the schema."""
     value = structured
-    if value is None:
-        stripped = (text or "").strip()
-        fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
-        if fence:
-            stripped = fence.group(1)
-        try:
-            value = json.loads(stripped)
-        except json.JSONDecodeError:
-            return None
+    # The same strict JSON as the app's reply reading (shared/README.md), so a
+    # lone surrogate or a repeated key is rejected instead of stored.
+    try:
+        if value is None:
+            stripped = (text or "").strip()
+            fence = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
+            if fence:
+                stripped = fence.group(1)
+            value = hardchecks.strict_json(stripped)
+        else:
+            hardchecks.check_strict(value)
+    except ValueError:  # includes json.JSONDecodeError
+        return None
     return value if valid_reply(value, json.loads(schema_file.read_text())) else None
 
 

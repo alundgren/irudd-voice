@@ -36,3 +36,14 @@ def test_prompt_bytes(case):
 def test_input_json_is_valid_json():
     for case in PROMPTS["cases"]:
         assert json.loads(prompt.input_json(case["transcript"]))["transcript"] == case["transcript"]
+
+
+def test_strict_json_details_the_fixtures_cannot_carry():
+    # Accepted replies with extra keys can't be shared fixtures: the label
+    # tool's teacher schema refuses extra keys. Swift has the same tests
+    # (CleanupContractTests.swift, StrictJSONTests).
+    assert hardchecks.parse_reply('{"cleaned": "a", "café": 1, "café": 2}').cleaned == "a"
+    deep = "[" * 99 + "]" * 99  # 100 levels with the outer object
+    assert hardchecks.parse_reply('{"cleaned": "a", "x": ' + deep + "}").cleaned == "a"
+    assert hardchecks.parse_reply('{"cleaned": "a\\ud83d\\ude00"}').cleaned == "a\U0001F600"
+    assert hardchecks.parse_reply('{"cleaned": "a", "n": 1e400, "m": -0.5E-3}').cleaned == "a"
