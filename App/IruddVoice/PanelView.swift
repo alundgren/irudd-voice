@@ -105,8 +105,8 @@ struct PanelView: View {
                     .help(model.databasePath)
                 Spacer()
                 Button("Settings…") {
-                    NSApp.activate()
                     openSettings()
+                    bringForward { $0.identifier?.rawValue == settingsWindowID }
                 }
                 Button("Quit") { NSApp.terminate(nil) }
             }
@@ -118,8 +118,8 @@ struct PanelView: View {
     }
 
     private func open(_ id: String) {
-        NSApp.activate()
         openWindow(id: id)
+        bringForward { $0.identifier?.rawValue.hasPrefix(id) == true }
     }
 }
 

@@ -40,8 +40,8 @@ private struct MenuBarIcon: View {
             .accessibilityLabel("irudd-voice: \(model.status.title)")
             .task {
                 guard !model.hasCompletedSetup else { return }
-                NSApp.activate()
                 openWindow(id: SetupView.windowID)
+                bringForward { $0.identifier?.rawValue.hasPrefix(SetupView.windowID) == true }
             }
     }
 }
