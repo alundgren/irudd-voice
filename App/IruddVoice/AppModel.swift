@@ -59,10 +59,16 @@ final class AppModel {
     private var overlay: OverlayController?
     private var thoughtsInFlight = 0
 
-    // MARK: Hotkey
+    // MARK: Hotkeys and pasting
 
-    private(set) var hotkey: Hotkey?
-    private(set) var hotkeyError: String?
+    private(set) var hotkeys: [HotkeyAction: Hotkey] = [:]
+    private(set) var hotkeyErrors: [HotkeyAction: String] = [:]
+    /// Text that couldn't be pasted where it was meant to go.
+    private(set) var waiting: WaitingText?
+    private let paster = Paster(clipboard: SystemClipboard(), keyboard: SystemKeyboard(), focus: AccessibilityFocus())
+    private let focus = AccessibilityFocus()
+    /// Thoughts thrown away before their text arrived, by start time.
+    private var throwAwayPending = false
 
     var status: AppStatus {
         let ready = hasCompletedSetup && micState != .noMicPicked && micState != .noPermission
@@ -82,7 +88,7 @@ final class AppModel {
     private let capture = LiveCapture()
     private let deviceSource = CoreAudioDevices()
     private var controller: DeviceController!
-    private let hotkeys = HotkeyCenter()
+    private let hotkeyCenter = HotkeyCenter()
 
     init() {
         isOn = preferences.isOn
@@ -90,7 +96,9 @@ final class AppModel {
         hasCompletedSetup = preferences.hasCompletedSetup
         pinnedUID = preferences.pinnedMicUID
         pinnedName = preferences.pinnedMicName
-        hotkey = preferences.hotkey
+        for action in HotkeyAction.allCases {
+            hotkeys[action] = preferences.hotkey(for: action)
+        }
         permissions.micPicked = pinnedUID != nil
 
         // Open the database first, so everything after this can log to it.
@@ -117,9 +125,9 @@ final class AppModel {
         devices = controller.devices
         micStateChanged(controller.state)
 
-        hotkeys.onPress = { [weak self] in self?.capture.hotkey() }
-        if !hotkeys.register(hotkey) {
-            hotkeyError = "\(hotkey?.display ?? "The hotkey") is already used by another app."
+        hotkeyCenter.onPress = { [weak self] action in self?.hotkeyPressed(action) }
+        for (action, hotkey) in hotkeys where !hotkeyCenter.register(hotkey, for: action) {
+            hotkeyErrors[action] = "\(hotkey.display) is already used by another app."
         }
 
         overlay = OverlayController(model: self)
@@ -183,8 +191,10 @@ final class AppModel {
             session?.append(samples)
             return
         case .ended(let thought):
-            activity = .idle
-            save(thought, transcription: session)
+            activity = .cleaningUp
+            let discard = thought.endReason == .thrownAway || throwAwayPending
+            throwAwayPending = false
+            save(thought, transcription: session, discard: discard)
             session = nil
         }
         overlay?.update()
@@ -205,9 +215,14 @@ final class AppModel {
         }
     }
 
-    /// Saves the audio first, then the text when recognition finishes.
-    private func save(_ thought: CapturedThought, transcription: SpeechSession?) {
-        guard let store else { return }
+    /// Saves the audio first, then the text when recognition finishes, then
+    /// pastes it into the text box that had focus when the thought ended.
+    private func save(_ thought: CapturedThought, transcription: SpeechSession?, discard: Bool) {
+        let pasteTarget = focus.current()
+        guard let store else {
+            activity = .idle
+            return
+        }
         let device: AudioDeviceInfo? = if case .listening(let info) = micState { info } else { nil }
         let target = NSWorkspace.shared.frontmostApplication
         let isUs = target?.bundleIdentifier == Bundle.main.bundleIdentifier
@@ -225,12 +240,17 @@ final class AppModel {
                 : SpeechSetupError.assetsMissing.description)
         thoughtsInFlight += 1
         Task.detached(priority: .userInitiated) { [weak self] in
-            await recorder.record(thought, meta: meta, transcription: transcription, saved: { _ in
+            let id = await recorder.record(thought, meta: meta, transcription: transcription, saved: { _ in
                 Task { @MainActor in await self?.refreshDatabaseInfo() }
             })
             await MainActor.run { self?.thoughtsInFlight -= 1 }
             await self?.refreshDatabaseInfo()
             await self?.showFinished()
+            if let id {
+                await self?.deliver(id: id, target: pasteTarget, discard: discard)
+            } else {
+                await self?.saveFailed()
+            }
         }
     }
 
@@ -244,6 +264,113 @@ final class AppModel {
                 self.justFinishedText = nil
                 self.overlay?.update()
             }
+        }
+    }
+
+    private func saveFailed() {
+        if activity == .cleaningUp { activity = waiting == nil ? .idle : .textWaiting }
+    }
+
+    /// Pastes a finished row's text, or keeps it waiting.
+    private func deliver(id: Int64, target: PasteTarget?, discard: Bool) async {
+        guard let store, let row = try? await store.chunk(id: id) else { return }
+        defer { if activity == .cleaningUp { activity = waiting == nil ? .idle : .textWaiting } }
+        if discard {
+            try? await store.markDiscarded(id: id)
+            log(.info, "paste", "Thrown away, not pasted (#\(id))")
+            return
+        }
+        guard row.status == "transcribed", let text = row.rawText, !text.isEmpty else {
+            try? await store.markPaste(id: id, status: "empty", text: nil)
+            return
+        }
+        guard let target else {
+            hold(WaitingText(id: id, text: text, reason: .targetMoved))
+            return
+        }
+        let outcome = await paster.paste(text, into: target)
+        record(outcome, id: id, text: text, target: target)
+    }
+
+    private func record(_ outcome: PasteOutcome, id: Int64, text: String, target: PasteTarget?) {
+        let app = target?.appName ?? "?"
+        switch outcome {
+        case .pasted:
+            if waiting?.id == id { waiting = nil }
+            Task { try? await store?.markPaste(id: id, status: "pasted", text: text) }
+            log(.info, "paste", "Pasted \(text.count) characters into \(app) (#\(id))")
+        case .waiting(let reason):
+            hold(WaitingText(id: id, text: text, reason: reason))
+            log(.warning, "paste", "Not pasted into \(app): \(reason.rawValue) (#\(id))")
+        }
+    }
+
+    private func hold(_ text: WaitingText) {
+        waiting = text
+        if activity != .hearing { activity = .textWaiting }
+        Task { try? await store?.markPaste(id: text.id, status: "waiting", text: nil) }
+    }
+
+    /// Paste here: pastes the waiting (or last) text into whatever has focus
+    /// once the panel has closed.
+    func pasteHere() {
+        guard let (id, text) = textToPasteAgain() else { return }
+        // Give focus back to the app you were in before opening the panel.
+        if NSApp.isActive { NSApp.hide(nil) }
+        Task {
+            try? await Task.sleep(for: .milliseconds(350))
+            let target = focus.current()
+            let outcome = await paster.pasteHere(text)
+            record(outcome, id: id, text: text, target: target)
+            if outcome == .pasted, activity == .textWaiting { activity = .idle }
+        }
+    }
+
+    /// Copy: puts the waiting text on the clipboard to keep.
+    func copyWaiting() {
+        guard let waiting else { return }
+        SystemClipboard().copy(waiting.text)
+        Task { try? await store?.markPaste(id: waiting.id, status: "copied", text: waiting.text) }
+        self.waiting = nil
+        if activity == .textWaiting { activity = .idle }
+    }
+
+    /// Throw away: ends the thought in progress, or drops waiting text.
+    func throwAway() {
+        if activity == .hearing {
+            capture.finishThought(.thrownAway)
+        } else if activity == .cleaningUp {
+            throwAwayPending = true
+        } else if let waiting {
+            Task { try? await store?.markDiscarded(id: waiting.id) }
+            log(.info, "paste", "Waiting text thrown away (#\(waiting.id))")
+            self.waiting = nil
+            if activity == .textWaiting { activity = .idle }
+        }
+    }
+
+    private func textToPasteAgain() -> (Int64, String)? {
+        if let waiting { return (waiting.id, waiting.text) }
+        if let last = lastChunk, last.status == "transcribed", let text = last.rawText, !text.isEmpty {
+            return (last.id, text)
+        }
+        return nil
+    }
+
+    private func hotkeyPressed(_ action: HotkeyAction) {
+        switch action {
+        case .startStop:
+            capture.hotkey()
+        case .pasteLast:
+            guard let (id, text) = textToPasteAgain() else { return }
+            Task {
+                let target = focus.current()
+                let outcome = await paster.pasteHere(text)
+                record(outcome, id: id, text: text, target: target)
+                if outcome == .pasted, activity == .textWaiting { activity = .idle }
+            }
+        case .throwAway:
+            throwAway()
         }
     }
 
@@ -332,25 +459,30 @@ final class AppModel {
 
     // MARK: Hotkey
 
-    func setHotkey(_ newHotkey: Hotkey?) {
-        hotkeyError = nil
-        if hotkeys.register(newHotkey) {
-            hotkey = newHotkey
-            preferences.hotkey = newHotkey
+    func setHotkey(_ newHotkey: Hotkey?, for action: HotkeyAction) {
+        hotkeyErrors[action] = nil
+        if let newHotkey, let other = hotkeys.first(where: { $0.key != action && $0.value == newHotkey })?.key {
+            hotkeyErrors[action] = "\(newHotkey.display) is already used for \(other.title)."
+            hotkeyCenter.register(hotkeys[action], for: action)
+            return
+        }
+        if hotkeyCenter.register(newHotkey, for: action) {
+            hotkeys[action] = newHotkey
+            preferences.setHotkey(newHotkey, for: action)
         } else {
-            hotkeyError = "\(newHotkey?.display ?? "That shortcut") is already used by another app."
-            hotkeys.register(hotkey)
+            hotkeyErrors[action] = "\(newHotkey?.display ?? "That shortcut") is already used by another app."
+            hotkeyCenter.register(hotkeys[action], for: action)
         }
     }
 
-    /// Turns the hotkey off while a new one is being recorded, so pressing
-    /// the old one doesn't start a thought.
-    func pauseHotkey() {
-        hotkeys.unregister()
+    /// Turns a hotkey off while a new one is being recorded, so pressing
+    /// the old one doesn't trigger it.
+    func pauseHotkey(_ action: HotkeyAction) {
+        hotkeyCenter.unregister(action)
     }
 
-    func resumeHotkey() {
-        hotkeys.register(hotkey)
+    func resumeHotkey(_ action: HotkeyAction) {
+        hotkeyCenter.register(hotkeys[action], for: action)
     }
 
     // MARK: Login item and setup
@@ -387,6 +519,12 @@ struct MicChoice: Identifiable, Equatable {
     let name: String
     let connected: Bool
     var id: String { uid }
+}
+
+struct WaitingText: Equatable {
+    let id: Int64
+    let text: String
+    let reason: WaitReason
 }
 
 /// Stands in for recognition that couldn't run, so the row says why.

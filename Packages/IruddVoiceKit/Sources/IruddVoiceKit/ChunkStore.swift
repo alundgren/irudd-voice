@@ -114,6 +114,21 @@ public actor ChunkStore {
             """, [.text(text), .text(recognizer), .text(now), .text(now), .int(id)])
     }
 
+    /// Records what happened to the text: pasted, waiting, copied, discarded, empty.
+    public func markPaste(id: Int64, status: String, text: String?) throws {
+        let now = Timestamps.string(Date())
+        try db.query("""
+            UPDATE chunks SET paste_status = ?, pasted_text = COALESCE(?, pasted_text),
+                pasted_at = CASE WHEN ? = 'pasted' THEN ? ELSE pasted_at END, updated_at = ? WHERE id = ?
+            """, [.text(status), .optional(text), .text(status), .text(now), .text(now), .int(id)])
+    }
+
+    /// Thrown away: keeps the audio and text, but it's never pasted.
+    public func markDiscarded(id: Int64) throws {
+        try db.query("UPDATE chunks SET status = 'discarded', paste_status = 'discarded', updated_at = ? WHERE id = ?",
+                     [.text(Timestamps.string(Date())), .int(id)])
+    }
+
     public func markError(id: Int64, message: String) throws {
         try db.query("UPDATE chunks SET status = 'error', error = ?, updated_at = ? WHERE id = ?",
                      [.text(message), .text(Timestamps.string(Date())), .int(id)])

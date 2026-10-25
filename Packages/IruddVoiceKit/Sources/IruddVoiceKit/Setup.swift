@@ -19,15 +19,13 @@ public enum Permission: String, CaseIterable, Sendable {
         case .microphone: "To hear you through the mic you pick."
         case .speechRecognition: "To turn your voice into text on this Mac."
         case .accessibility: "To paste the text where your cursor is."
-        case .clipboard: "To put back what was on your clipboard after pasting."
+        case .clipboard: "To put back what was on your clipboard after pasting. Choose \"Always allow\"."
         }
     }
 
-    /// Without these the app can't dictate at all. Clipboard access only
-    /// lets the app restore your clipboard after a paste.
-    public var isRequired: Bool {
-        self != .clipboard
-    }
+    /// All are needed. Without "Always allow" clipboard access the app
+    /// can't put your clipboard back after pasting, so it doesn't paste.
+    public var isRequired: Bool { true }
 }
 
 public enum PermissionState: Sendable, Equatable {

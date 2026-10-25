@@ -65,6 +65,10 @@ struct PanelView: View {
                 Text("Preview while talking").font(.subheadline.weight(.semibold))
             }
 
+            if let waiting = model.waiting {
+                WaitingTextRow(waiting: waiting)
+            }
+
             if model.hasCompletedSetup, model.speechFiles != .installed {
                 SpeechFilesRow()
             }
@@ -161,5 +165,34 @@ struct SpeechFilesRow: View {
                 Button("Try Again") { model.installSpeechFiles() }
             }
         }
+    }
+}
+
+/// Text that wasn't pasted, with what to do about it.
+private struct WaitingTextRow: View {
+    let waiting: WaitingText
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Text waiting", systemImage: "text.badge.plus").font(.subheadline.weight(.semibold))
+            Text(waiting.text).lineLimit(3).textSelection(.enabled)
+            Text(waiting.reason.description).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Paste Here") {
+                    dismiss()
+                    model.pasteHere()
+                }
+                .help("Closes this panel and pastes where your cursor is")
+                Button("Copy") { model.copyWaiting() }
+                Spacer()
+                Button("Throw Away", role: .destructive) { model.throwAway() }
+            }
+            .controlSize(.small)
+        }
+        .padding(10)
+        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 }

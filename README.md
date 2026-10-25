@@ -9,7 +9,8 @@ your own voice and words.
 **Status:** early. This version has the menu-bar app, first-run setup, the
 installer, mic capture (pick a mic; the mute button or a hotkey starts and
 ends a thought), and saving: every thought's audio and Apple's text go into
-the database. Pasting, cleanup and training come next.
+the database, then Apple's text is pasted where your cursor was. Cleanup
+and training come next.
 
 ## What you need
 
@@ -35,7 +36,8 @@ What to expect:
    first time (several hundred MB), builds the app, and puts it in
    `~/Applications/irudd-voice.app`. It prints the certificate's SHA-1.
 3. **First open:** setup asks for Microphone, Speech Recognition,
-   Accessibility and (optional) Clipboard access.
+   Accessibility and Clipboard access (choose "Always allow"), and
+   downloads Apple's English speech files.
 
 If a check fails, install.sh says what's missing and leaves any installed
 app as it was. To update, run `git pull` and `./install.sh` again.

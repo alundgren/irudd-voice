@@ -80,6 +80,7 @@ struct LevelMeter: View {
 
 /// Records a global hotkey: press Record, then the keys.
 struct HotkeyRecorder: View {
+    let action: HotkeyAction
     @Environment(AppModel.self) private var model
     @State private var recording = false
     @State private var monitor: Any?
@@ -88,7 +89,7 @@ struct HotkeyRecorder: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(recording ? "Press the keys…" : (model.hotkey?.display ?? "None"))
+                Text(recording ? "Press the keys…" : (model.hotkeys[action]?.display ?? "None"))
                     .font(.body.monospaced())
                     .frame(minWidth: 120, alignment: .leading)
                     .padding(.horizontal, 8)
@@ -97,11 +98,11 @@ struct HotkeyRecorder: View {
                 Button(recording ? "Cancel" : "Record…") {
                     recording ? stop() : start()
                 }
-                if model.hotkey != nil, !recording {
-                    Button("Clear") { model.setHotkey(nil) }
+                if model.hotkeys[action] != nil, !recording {
+                    Button("Clear") { model.setHotkey(nil, for: action) }
                 }
             }
-            if let message = hint ?? model.hotkeyError {
+            if let message = hint ?? model.hotkeyErrors[action] {
                 Text(message).font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -111,7 +112,7 @@ struct HotkeyRecorder: View {
     private func start() {
         hint = "Use ⌘, ⌥ or ⌃ with a key, or an F-key alone. Esc cancels."
         recording = true
-        model.pauseHotkey()
+        model.pauseHotkey(action)
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == 53 { // Esc
                 stop()
@@ -128,7 +129,7 @@ struct HotkeyRecorder: View {
                 ?? "Key \(keyCode)"
             stop()
             model.setHotkey(Hotkey(keyCode: keyCode, carbonModifiers: modifiers,
-                                   display: Hotkey.modifierSymbols(modifiers) + key))
+                                   display: Hotkey.modifierSymbols(modifiers) + key), for: action)
             return nil
         }
     }
@@ -136,7 +137,7 @@ struct HotkeyRecorder: View {
     private func stop() {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
-        if recording { model.resumeHotkey() }
+        if recording { model.resumeHotkey(action) }
         recording = false
         hint = nil
     }

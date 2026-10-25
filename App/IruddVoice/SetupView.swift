@@ -99,7 +99,7 @@ private struct PermissionRow: View {
                 .foregroundStyle(color)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text(permission.title + (permission.isRequired ? "" : " (optional)"))
+                Text(permission.title)
                 Text(permission.reason).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()

@@ -1,3 +1,33 @@
+/// What a hotkey does.
+public enum HotkeyAction: String, CaseIterable, Sendable {
+    case startStop
+    case pasteLast
+    case throwAway
+
+    public var title: String {
+        switch self {
+        case .startStop: "Start/stop thought"
+        case .pasteLast: "Paste last again"
+        case .throwAway: "Throw away current"
+        }
+    }
+
+    public var help: String {
+        switch self {
+        case .startStop:
+            "Starts a thought, or ends the one in progress. For mics without a mute button, like AirPods. A thought started this way also ends after 5 seconds of silence."
+        case .pasteLast:
+            "Pastes the last text again where your cursor is now, including text that's waiting."
+        case .throwAway:
+            "Ends the thought in progress, or drops waiting text, without pasting. The audio is still saved."
+        }
+    }
+
+    var preferenceKey: String {
+        self == .startStop ? "hotkey" : "hotkey.\(rawValue)"
+    }
+}
+
 /// A global keyboard shortcut. Stored as the Carbon key code and modifier
 /// mask that `RegisterEventHotKey` takes, plus text to show.
 public struct Hotkey: Sendable, Equatable, Codable {

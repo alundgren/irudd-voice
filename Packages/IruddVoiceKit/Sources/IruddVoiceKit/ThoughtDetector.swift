@@ -34,6 +34,7 @@ public enum ThoughtEndReason: String, Sendable {
     case micLost
     case micChanged
     case switchedOff
+    case thrownAway
 
     public var description: String {
         switch self {
@@ -43,6 +44,7 @@ public enum ThoughtEndReason: String, Sendable {
         case .micLost: "mic unplugged"
         case .micChanged: "switched mic"
         case .switchedOff: "switched off"
+        case .thrownAway: "thrown away"
         }
     }
 }

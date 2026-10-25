@@ -80,11 +80,12 @@ public final class Preferences {
         set { store.set(newValue, forKey: Key.pinnedMicName) }
     }
 
-    /// The start/stop hotkey. None by default.
-    public var hotkey: Hotkey? {
-        get {
-            (store.object(forKey: Key.hotkey) as? Data).flatMap { try? JSONDecoder().decode(Hotkey.self, from: $0) }
-        }
-        set { store.set(newValue.flatMap { try? JSONEncoder().encode($0) }, forKey: Key.hotkey) }
+    /// A hotkey for each action. None are set by default.
+    public func hotkey(for action: HotkeyAction) -> Hotkey? {
+        (store.object(forKey: action.preferenceKey) as? Data).flatMap { try? JSONDecoder().decode(Hotkey.self, from: $0) }
+    }
+
+    public func setHotkey(_ hotkey: Hotkey?, for action: HotkeyAction) {
+        store.set(hotkey.flatMap { try? JSONEncoder().encode($0) }, forKey: action.preferenceKey)
     }
 }

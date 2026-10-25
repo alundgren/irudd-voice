@@ -69,6 +69,11 @@ public final class LiveCapture: CaptureStream {
         engine?.hotkey()
     }
 
+    /// Ends the thought in progress (if any) without closing the stream.
+    public func finishThought(_ reason: ThoughtEndReason) {
+        engine?.finishThought(reason)
+    }
+
     private func deliver(_ message: CaptureEngine.Message) {
         switch message {
         case .event(let event): onEvent?(event)
@@ -189,8 +194,13 @@ private final class CaptureEngine: @unchecked Sendable {
 
     func hotkey() {
         queue.async { [self] in
-            drain()
-            for event in detector.hotkey() { send(.event(event)) }
+            for event in drain() + detector.hotkey() { send(.event(event)) }
+        }
+    }
+
+    func finishThought(_ reason: ThoughtEndReason) {
+        queue.async { [self] in
+            for event in drain() + detector.finish(reason) { send(.event(event)) }
         }
     }
 

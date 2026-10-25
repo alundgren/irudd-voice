@@ -65,13 +65,14 @@ private struct LaterPane: View {
 private struct HotkeySettings: View {
     var body: some View {
         Form {
-            Section {
-                LabeledContent("Start/stop thought") {
-                    HotkeyRecorder()
+            ForEach(HotkeyAction.allCases, id: \.self) { action in
+                Section {
+                    LabeledContent(action.title) {
+                        HotkeyRecorder(action: action)
+                    }
+                } footer: {
+                    Text(action.help).font(.caption).foregroundStyle(.secondary)
                 }
-            } footer: {
-                Text("Starts a thought, or ends the one in progress. Useful for mics without a mute button, like AirPods. A thought started with the hotkey also ends after 5 seconds of silence.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

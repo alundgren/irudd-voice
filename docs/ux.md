@@ -74,6 +74,28 @@ The preview floats just above the bottom of the screen, centred. It never
 takes focus or clicks. In Transcript mode the final text stays for 4
 seconds after a thought ends.
 
+## Pasting
+
+- The text goes to the app **and text box** that had focus when the
+  thought ended. If you switched app, or switched to another text box or
+  conversation in the same app, nothing is pasted anywhere. The icon shows
+  **Text waiting**, and the panel offers **Paste Here** (closes the panel
+  and pastes where your cursor is), **Copy** and **Throw Away**.
+- The text goes through the clipboard and ⌘V. The old clipboard (text,
+  images, anything) is put back 1 second later, unless you copied
+  something new in the meantime. The dictation is marked concealed and
+  transient, so clipboard managers like Raycast skip it.
+- The app waits until you let go of held keys before pressing ⌘V, and uses
+  the key that types V on your keyboard layout.
+- Without "Always allow" clipboard access the old clipboard couldn't be put
+  back, so the text waits instead of being pasted. That's why setup asks
+  for it.
+- Hotkeys (none set by default, Settings → Hotkeys): **Start/stop
+  thought**, **Paste last again** (pastes the waiting or last text where
+  your cursor is now) and **Throw away current** (ends the thought in
+  progress or drops waiting text; the audio is still saved and the row is
+  marked discarded).
+
 ## Rules the app never breaks
 
 - It never switches to another mic. If the pinned mic is unplugged, it

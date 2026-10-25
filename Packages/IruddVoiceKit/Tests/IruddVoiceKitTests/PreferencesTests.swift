@@ -8,7 +8,7 @@ struct PreferencesTests {
         #expect(prefs.previewMode == .off)
         #expect(!prefs.hasCompletedSetup)
         #expect(prefs.pinnedMicUID == nil)
-        #expect(prefs.hotkey == nil)
+        #expect(HotkeyAction.allCases.allSatisfy { prefs.hotkey(for: $0) == nil })
     }
 
     @Test func valuesPersistInTheStore() {
@@ -18,11 +18,14 @@ struct PreferencesTests {
         prefs.previewMode = .transcript
         prefs.hasCompletedSetup = true
         prefs.pinnedMicUID = "AppleUSBAudioEngine:JIAYZ:BY-GM18CU:serial:1"
-        prefs.hotkey = Hotkey(keyCode: 2, carbonModifiers: Hotkey.control | Hotkey.option, display: "⌃⌥D")
+        prefs.setHotkey(Hotkey(keyCode: 2, carbonModifiers: Hotkey.control | Hotkey.option, display: "⌃⌥D"), for: .startStop)
+        prefs.setHotkey(Hotkey(keyCode: 9, carbonModifiers: Hotkey.control | Hotkey.option, display: "⌃⌥V"), for: .pasteLast)
 
         let reopened = Preferences(store: store)
         #expect(reopened.pinnedMicUID == "AppleUSBAudioEngine:JIAYZ:BY-GM18CU:serial:1")
-        #expect(reopened.hotkey == Hotkey(keyCode: 2, carbonModifiers: Hotkey.control | Hotkey.option, display: "⌃⌥D"))
+        #expect(reopened.hotkey(for: .startStop) == Hotkey(keyCode: 2, carbonModifiers: Hotkey.control | Hotkey.option, display: "⌃⌥D"))
+        #expect(reopened.hotkey(for: .pasteLast)?.display == "⌃⌥V")
+        #expect(reopened.hotkey(for: .throwAway) == nil)
         #expect(!reopened.isOn)
         #expect(reopened.previewMode == .transcript)
         #expect(reopened.hasCompletedSetup)
