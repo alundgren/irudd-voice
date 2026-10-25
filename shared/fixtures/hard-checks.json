@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "about": "Every hard-check implementation (Swift app, Python CLI) must give exactly these results. 'reply' cases test parsing the model's raw reply; 'cleaned' cases test the checks.",
+  "replies": [
+    {"name": "plain JSON", "reply": "{\"cleaned\": \"Run the tests.\"}", "cleaned": "Run the tests.", "failure": null},
+    {"name": "JSON in a code fence", "reply": "```json\n{\"cleaned\": \"Run the tests.\"}\n```", "cleaned": "Run the tests.", "failure": null},
+    {"name": "think tags", "reply": "<think>The user wants...</think>{\"cleaned\": \"Run the tests.\"}", "cleaned": null, "failure": "think_tags"},
+    {"name": "cut off", "reply": "{\"cleaned\": \"Run the tests and then", "cleaned": null, "failure": "cut_off"},
+    {"name": "plain text", "reply": "Run the tests.", "cleaned": null, "failure": "malformed"},
+    {"name": "wrong key", "reply": "{\"text\": \"Run the tests.\"}", "cleaned": null, "failure": "malformed"},
+    {"name": "not a string", "reply": "{\"cleaned\": 42}", "cleaned": null, "failure": "malformed"}
+  ],
+  "checks": [
+    {"name": "fillers removed", "transcript": "um can you uh run the tests", "cleaned": "Can you run the tests?", "vocabulary": [], "failures": []},
+    {"name": "spoken correction kept", "transcript": "change the timeout to fifteen seconds no fifty seconds and don't touch the retries", "cleaned": "Change the timeout to fifty seconds, and don't touch the retries.", "vocabulary": [], "failures": []},
+    {"name": "digits for spoken numbers", "transcript": "set the limit to twenty five", "cleaned": "Set the limit to 25.", "vocabulary": [], "failures": []},
+    {"name": "hundreds", "transcript": "use one hundred and five workers", "cleaned": "Use 105 workers.", "vocabulary": [], "failures": []},
+    {"name": "answered a question", "transcript": "can you explain why the tests failed", "cleaned": "Sure! The tests failed because the mock server wasn't started.", "vocabulary": [], "failures": ["answers", "negation", "new_words"]},
+    {"name": "answer that grew", "transcript": "explain the build", "cleaned": "The build compiles every Swift file, links the frameworks, signs the bundle and copies the resources into place before packaging.", "vocabulary": [], "failures": ["answers", "new_words"]},
+    {"name": "question kept as a question", "transcript": "can you explain why the tests failed", "cleaned": "Can you explain why the tests failed?", "vocabulary": [], "failures": []},
+    {"name": "number changed", "transcript": "retry three times", "cleaned": "Retry four times.", "vocabulary": [], "failures": ["numbers"]},
+    {"name": "number dropped", "transcript": "wait 30 seconds then retry", "cleaned": "Wait, then retry.", "vocabulary": [], "failures": ["numbers"]},
+    {"name": "negation dropped", "transcript": "do not delete the cache", "cleaned": "Delete the cache.", "vocabulary": [], "failures": ["negation"]},
+    {"name": "contraction for negation is fine", "transcript": "do not delete the cache", "cleaned": "Don't delete the cache.", "vocabulary": [], "failures": []},
+    {"name": "identifier kept", "transcript": "rename fetchUser to loadUser in api_client.py", "cleaned": "Rename fetchUser to loadUser in api_client.py.", "vocabulary": [], "failures": []},
+    {"name": "identifier lost", "transcript": "rename fetchUser to loadUser", "cleaned": "Rename the fetch function to loadUser.", "vocabulary": [], "failures": ["identifiers", "new_words"]},
+    {"name": "identifier recased", "transcript": "open readme.md", "cleaned": "Open README.md.", "vocabulary": [], "failures": []},
+    {"name": "invented word", "transcript": "update the docs", "cleaned": "Update the documentation carefully.", "vocabulary": [], "failures": ["new_words"]},
+    {"name": "vocabulary spelling", "transcript": "open tea three code", "cleaned": "Open T3 Code.", "vocabulary": ["T3 Code"], "failures": []},
+    {"name": "spoken parts joined", "transcript": "edit the read me", "cleaned": "Edit the readme.", "vocabulary": [], "failures": []},
+    {"name": "plural and tense", "transcript": "fix the failing test", "cleaned": "Fix the failing tests.", "vocabulary": [], "failures": []},
+    {"name": "no correction, number must stay", "transcript": "use port 8080 not 3000", "cleaned": "Use port 8080, not 3000.", "vocabulary": [], "failures": []},
+    {"name": "empty cleaned for filler only", "transcript": "um uh", "cleaned": "", "vocabulary": [], "failures": []}
+  ]
+}
