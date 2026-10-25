@@ -147,13 +147,15 @@ public final class ThoughtDetector {
                 zeroRun = 0
             }
 
-            if var current = thought {
-                current.samples.append(sample)
+            // Mutate the thought in place. Copying it out (`if var current =
+            // thought`) would copy its whole sample array on every sample,
+            // which made long thoughts slower and slower.
+            if thought != nil {
+                thought!.samples.append(sample)
                 unsent.append(sample)
-                trackSilence(&current, sample: sample, pos: pos)
-                thought = current
-                if current.reason == .hotkey, current.silentSamples >= silenceTimeoutSamples {
-                    events += end(at: current.silenceStart, reason: .silence)
+                trackSilence(sample: sample, pos: pos)
+                if thought!.reason == .hotkey, thought!.silentSamples >= silenceTimeoutSamples {
+                    events += end(at: thought!.silenceStart, reason: .silence)
                 }
             }
 
@@ -202,11 +204,12 @@ public final class ThoughtDetector {
     private func end(at endPos: Int64, reason: ThoughtEndReason) -> [ThoughtEvent] {
         var events: [ThoughtEvent] = []
         flushUnsent(into: &events)
-        let current = thought!
+        var current = thought!
         thought = nil
         let keep = Int(max(0, min(Int64(current.samples.count), endPos - current.firstSample)))
+        current.samples.removeLast(current.samples.count - keep)
         events.append(.ended(CapturedThought(
-            samples: Array(current.samples.prefix(keep)),
+            samples: current.samples,
             sampleRate: sampleRate,
             firstSample: current.firstSample,
             signalSample: current.signalSample,
@@ -222,20 +225,20 @@ public final class ThoughtDetector {
         unsent.removeAll(keepingCapacity: true)
     }
 
-    private func trackSilence(_ current: inout Thought, sample: Float, pos: Int64) {
-        current.windowPeak = max(current.windowPeak, abs(sample))
-        current.windowCount += 1
-        guard current.windowCount == silenceWindowSamples else { return }
-        if current.windowPeak < settings.silenceLevel {
-            if current.silentSamples == 0 {
-                current.silenceStart = pos + 1 - Int64(silenceWindowSamples)
+    private func trackSilence(sample: Float, pos: Int64) {
+        thought!.windowPeak = max(thought!.windowPeak, abs(sample))
+        thought!.windowCount += 1
+        guard thought!.windowCount == silenceWindowSamples else { return }
+        if thought!.windowPeak < settings.silenceLevel {
+            if thought!.silentSamples == 0 {
+                thought!.silenceStart = pos + 1 - Int64(silenceWindowSamples)
             }
-            current.silentSamples += silenceWindowSamples
+            thought!.silentSamples += silenceWindowSamples
         } else {
-            current.silentSamples = 0
+            thought!.silentSamples = 0
         }
-        current.windowPeak = 0
-        current.windowCount = 0
+        thought!.windowPeak = 0
+        thought!.windowCount = 0
     }
 }
 

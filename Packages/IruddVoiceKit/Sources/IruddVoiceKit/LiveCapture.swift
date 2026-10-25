@@ -228,10 +228,13 @@ private final class CaptureEngine: @unchecked Sendable {
     private func drain() -> [ThoughtEvent] {
         let samples = ring.takeAll()
         guard !samples.isEmpty else { return [] }
+        updateLevel(samples)
+        let events = detector.process(samples)
+        // Set after processing, so slow processing is never mistaken for
+        // the mic going quiet.
         lastAudioAt = Date()
         reportedStall = false
-        updateLevel(samples)
-        return detector.process(samples)
+        return events
     }
 
     private func updateLevel(_ samples: [Float]) {

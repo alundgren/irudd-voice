@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from statistics import median
 
 from . import db
 
@@ -16,6 +17,13 @@ def stats(con, path: Path) -> dict:
         "SELECT COALESCE(SUM(duration_ms), 0), MIN(local_day), MAX(local_day), COUNT(DISTINCT local_day) FROM chunks"
     ).fetchone()
     labels = dict(con.execute("SELECT status, COUNT(*) FROM labels GROUP BY status").fetchall())
+    # Seconds from the end of a thought (the mute press) to its audio being
+    # saved and to its text being ready, over the last 20 transcribed thoughts.
+    timings = con.execute(
+        "SELECT (julianday(created_at) - julianday(ended_at)) * 86400, "
+        "(julianday(transcribed_at) - julianday(ended_at)) * 86400 "
+        "FROM chunks WHERE status = 'transcribed' ORDER BY id DESC LIMIT 20"
+    ).fetchall()
     last = con.execute(
         "SELECT ended_at, status, raw_text FROM chunks ORDER BY id DESC LIMIT 1"
     ).fetchone()
@@ -30,6 +38,12 @@ def stats(con, path: Path) -> dict:
         "first_day": first_day,
         "last_day": last_day,
         "labels": {s: labels.get(s, 0) for s in ("accepted", "rejected")},
+        "speed": None if not timings else {
+            "thoughts": len(timings),
+            "saved_after_seconds": round(median(t[0] for t in timings), 2),
+            "text_after_seconds": round(median(t[1] for t in timings), 2),
+            "slowest_text_after_seconds": round(max(t[1] for t in timings), 2),
+        },
         "last_thought": None if last is None else {"ended_at": last[0], "status": last[1], "text": last[2]},
     }
 
@@ -62,6 +76,10 @@ def print_stats(s: dict) -> None:
         span = s["first_day"] if s["days"] == 1 else f"{s['first_day']} to {s['last_day']}"
         print(f"Audio:     {human_duration(s['audio_seconds'])} over {s['days']} day(s) ({span})")
     print(f"Labels:    {s['labels']['accepted']} accepted, {s['labels']['rejected']} rejected")
+    if s["speed"]:
+        sp = s["speed"]
+        print(f"Speed:     audio saved {sp['saved_after_seconds']} s and text ready {sp['text_after_seconds']} s "
+              f"after you stop (median of last {sp['thoughts']}; slowest {sp['slowest_text_after_seconds']} s)")
     if s["last_thought"]:
         text = s["last_thought"]["text"] or f"({s['last_thought']['status']})"
         if len(text) > 70:

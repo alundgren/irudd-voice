@@ -152,6 +152,12 @@ public actor ChunkStore {
         return wanted.map { ($0, byDay[$0] ?? 0) }
     }
 
+    /// Rows still waiting for text, for example because the app quit
+    /// before recognition finished.
+    public func pendingIDs() throws -> [Int64] {
+        try db.query("SELECT id FROM chunks WHERE status = 'pending' ORDER BY id").compactMap { $0[0].int }
+    }
+
     public func count() throws -> Int {
         Int(try db.query("SELECT COUNT(*) FROM chunks").first?.first?.int ?? 0)
     }
@@ -220,6 +226,29 @@ public protocol ThoughtTranscription: Sendable {
 }
 
 /// The production save path: audio first, then text.
+/// Recognition of audio that's already saved: decodes the row's audio and
+/// runs it through a fresh transcription.
+public struct SavedAudioTranscription: ThoughtTranscription {
+    public let recognizer: String
+    let make: @Sendable (Double) -> SpeechSession
+    let samples: [Float]
+    let sampleRate: Double
+
+    public init(samples: [Float], sampleRate: Double, recognizer: String,
+                make: @escaping @Sendable (Double) -> SpeechSession) {
+        self.samples = samples
+        self.sampleRate = sampleRate
+        self.recognizer = recognizer
+        self.make = make
+    }
+
+    public func finish(through seconds: Double) async throws -> String {
+        let session = make(sampleRate)
+        session.append(samples)
+        return try await session.finish(through: seconds)
+    }
+}
+
 public struct ChunkRecorder: Sendable {
     public let store: ChunkStore
 
@@ -243,12 +272,37 @@ public struct ChunkRecorder: Sendable {
             try? await store.markError(id: id, message: "No speech recognizer was running for this thought.")
             return id
         }
+        await transcribe(id: id, transcription: transcription, through: thought.duration)
+        return id
+    }
+
+    /// Finishes a pending row: waits for the text and marks it transcribed or error.
+    public func transcribe(id: Int64, transcription: any ThoughtTranscription, through seconds: Double) async {
         do {
-            let text = try await transcription.finish(through: thought.duration)
+            let text = try await transcription.finish(through: seconds)
             try await store.markTranscribed(id: id, text: text, recognizer: transcription.recognizer)
         } catch {
             try? await store.markError(id: id, message: "Speech recognition failed: \(error)")
         }
-        return id
+    }
+
+    /// Rows left pending by a quit or crash: recognise their saved audio
+    /// again. Rows whose audio can't be read are marked error.
+    public func finishPending(locale: Locale) async {
+        guard let ids = try? await store.pendingIDs() else { return }
+        for id in ids {
+            guard let audio = try? await store.audio(id: id),
+                  let samples = try? AudioEncoding.decode(audio.data, format: audio.format, sampleRate: audio.sampleRate)
+            else {
+                try? await store.markError(id: id, message: "The app stopped before recognition finished, and the audio couldn't be read.")
+                continue
+            }
+            let rate = Double(audio.sampleRate)
+            let transcription = SavedAudioTranscription(
+                samples: samples, sampleRate: rate,
+                recognizer: "SpeechTranscriber \(locale.identifier) (after restart)",
+                make: { SpeechSession(locale: locale, sampleRate: $0, onText: { _ in }) })
+            await transcribe(id: id, transcription: transcription, through: Double(samples.count) / rate)
+        }
     }
 }

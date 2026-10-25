@@ -172,7 +172,9 @@ final class AppModel {
             session = startSpeech()
             session?.append(preRoll)
         case .audio(let samples):
+            // 50 times a second: only feed recognition, nothing else.
             session?.append(samples)
+            return
         case .ended(let thought):
             activity = .idle
             save(thought, transcription: session)
@@ -271,6 +273,13 @@ final class AppModel {
         if case .downloading = speechFiles { return }
         speechFiles = await SpeechAssets.isInstalled() ? .installed : .missing
         permissions.speechReady = speechFiles == .installed
+        if speechFiles == .installed, let store, let speechLocale {
+            let recorder = ChunkRecorder(store: store)
+            Task.detached(priority: .utility) { [weak self] in
+                await recorder.finishPending(locale: speechLocale)
+                await self?.refreshDatabaseInfo()
+            }
+        }
     }
 
     func installSpeechFiles() {

@@ -24,6 +24,10 @@ def test_audio_is_saved_first_and_readable_while_the_app_writes(app_db, db_tool,
         time.sleep(0.05)
     assert app.returncode == 0
     assert readings > 3
+    speed = json.loads((cli.main(["--db", str(app_db), "stats", "--json"]), capsys.readouterr().out)[1])["speed"]
+    # The fake recognizer answers 0.6 s after the end; saving comes first.
+    assert speed["thoughts"] == 3
+    assert speed["saved_after_seconds"] < speed["text_after_seconds"]
     assert seen_pending, "a row should be visible as pending before its text arrives"
 
     con = db.connect(app_db)
