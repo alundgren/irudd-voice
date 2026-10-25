@@ -280,7 +280,8 @@ public actor ChunkStore {
             try db.execute("DELETE FROM dataset_days")
             try db.execute("DELETE FROM chunks")
             try db.execute("""
-                UPDATE models SET eval_report_json = json_remove(eval_report_json, '$.items')
+                UPDATE models SET eval_report_json = CASE WHEN json_valid(eval_report_json)
+                    THEN json_remove(eval_report_json, '$.items') ELSE NULL END
                 WHERE eval_report_json IS NOT NULL
                 """)
         }

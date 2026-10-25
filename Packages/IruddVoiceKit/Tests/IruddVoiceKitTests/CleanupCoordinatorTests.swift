@@ -501,7 +501,7 @@ struct ModelOverviewTests {
         let report = """
             {"kind": "eval-compare", "version": 1, "incumbent": {"id": "\(CleanupDefaults.modelID)"},
              "created_at": "2026-10-25T13:00:00Z",
-             "summary": {"compared": 120, "votes": {"win": 60, "loss": 40, "tie": 15, "same": 5, "split": 0, "failed": 0},
+             "summary": {"thoughts": 125, "compared": 120, "votes": {"win": 60, "loss": 40, "tie": 15, "same": 5, "split": 0, "failed": 0},
                          "decided": 100, "win_rate": 0.6,
                          "hard_checks": {"candidate_thoughts_failed": 3, "incumbent_thoughts_failed": 7, "new_failures": 0}},
              "decision": {"promotable": true, "reasons": []}}
@@ -527,10 +527,30 @@ struct ModelOverviewTests {
         #expect(overview.training?.trainedAt == "2026-10-25T12:00:00Z")
         let eval = try #require(overview.eval)
         #expect(eval.incumbentID == CleanupDefaults.modelID)
-        #expect(eval.wins == 60 && eval.decided == 100 && eval.compared == 120)
+        #expect(eval.wins == 60 && eval.decided == 100 && eval.compared == 120 && eval.thoughts == 125)
         #expect(eval.winPercent == 60)
         #expect(eval.thoughtsFailed == 3 && eval.incumbentThoughtsFailed == 7)
         #expect(eval.promotable == true)
+    }
+
+    @Test func olderReportWithoutThoughtsCountsCompared() throws {
+        let eval = try #require(EvalSummary.parse("""
+            {"summary": {"compared": 110, "votes": {"win": 1}, "decided": 2}}
+            """))
+        #expect(eval.thoughts == 110 && eval.compared == 110)
+    }
+
+    @Test func deleteAllKeepsReportsWithoutItemsAndDropsBrokenOnes() async throws {
+        let fixture = try CleanupFixture()
+        let db = try fixture.cli()
+        try db.query("""
+            INSERT INTO models (id, base_repo, base_revision, manifest_json, eval_report_json, created_at)
+            VALUES ('a', 'r', 'v', '{}', '{"summary": {"thoughts": 3}, "items": [{"raw": "x"}]}', 'now'),
+                   ('b', 'r', 'v', '{}', 'not json', 'now'), ('c', 'r', 'v', '{}', NULL, 'now')
+            """)
+        try await fixture.store.deleteAllRecordings()
+        let reports = try db.query("SELECT id, eval_report_json FROM models ORDER BY id").map { $0[1].text }
+        #expect(reports == [#"{"summary":{"thoughts":3}}"#, nil, nil])
     }
 
     @Test func notAReport() {

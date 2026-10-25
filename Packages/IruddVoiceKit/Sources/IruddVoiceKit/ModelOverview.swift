@@ -52,6 +52,9 @@ public struct ModelOverview: Equatable, Sendable {
 public struct EvalSummary: Equatable, Sendable {
     public var incumbentID: String?
     public var createdAt: String?
+    /// Frozen test thoughts both models cleaned (`summary.thoughts`).
+    public var thoughts: Int
+    /// Those with a usable vote.
     public var compared: Int
     /// Votes that went one way or the other (ties and failed calls don't count).
     public var decided: Int
@@ -72,6 +75,8 @@ public struct EvalSummary: Equatable, Sendable {
         return EvalSummary(
             incumbentID: (object["incumbent"] as? [String: Any])?["id"] as? String,
             createdAt: object["created_at"] as? String,
+            // Reports from before `thoughts` existed only had `compared`.
+            thoughts: summary["thoughts"] as? Int ?? summary["compared"] as? Int ?? 0,
             compared: summary["compared"] as? Int ?? 0,
             decided: summary["decided"] as? Int ?? 0,
             wins: votes?["win"] as? Int ?? 0,

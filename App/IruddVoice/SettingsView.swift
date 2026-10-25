@@ -90,7 +90,7 @@ private struct ModelSettings: View {
                     }
                     if let failed = eval.thoughtsFailed, let before = eval.incumbentThoughtsFailed {
                         LabeledContent("Failed a hard check") {
-                            Text("\(failed) of \(eval.compared) test thoughts (previous: \(before))")
+                            Text("\(failed) of \(eval.thoughts) test thoughts (previous: \(before))")
                         }
                     }
                 }
