@@ -24,6 +24,10 @@ cd cli
 uv run --group ml irudd-voice models prepare gemma-4-e2b
 ```
 
+This also fetches Gemma's small drafter model, which makes cleanup about
+2.5 times faster (a 50-word thought in about 0.4 s). The model folder takes
+2.9 GB.
+
 ## What you need
 
 - A Mac with Apple silicon and macOS 27 or newer
@@ -127,7 +131,7 @@ Third-party parts used in later versions:
 | --- | --- | --- |
 | [mlx-swift](https://github.com/ml-explore/mlx-swift), [mlx-swift-lm](https://github.com/ml-explore/mlx-swift-lm) | MIT | Running the cleanup model |
 | [mlx-lm](https://github.com/ml-explore/mlx-lm) | MIT | Training the cleanup model |
-| Qwen3.5 (2B, 4B), Gemma 4 E2B | Apache-2.0 | Cleanup model weights, downloaded separately |
+| Qwen3.5 (2B, 4B), Gemma 4 E2B, Gemma 4 E2B assistant (drafter) | Apache-2.0 | Cleanup model weights, downloaded separately |
 
 ## Command line
 

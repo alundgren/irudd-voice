@@ -13,9 +13,15 @@ import MLX
 //   prompt-check --model DIR --reference FILE   (prompt tokens only; no weights loaded)
 //   xpc-check --model DIR    (the helper's handler over an in-process XPC listener)
 //   thought-check [--models DIR] [--model-id ID]   (the app's cleanup path, see below)
+//   draft-check [--model DIR]   (drafted vs plain tokens at 5 and 6 tokens, and both fallbacks)
 //
 // Common options: --prompt FILE (default shared/cleanup-prompt.json),
-// --no-verify (skip manifest checksums).
+// --no-verify (skip manifest checksums). A model folder whose manifest names
+// a drafter decodes speculatively, as in the app (docs/models/speculative.md).
+// generate, eval and bench also take --draft-tokens N (replaces the
+// manifest's count; 0 loads the drafter's model class without drafting),
+// --draft DIR (another drafter folder) and --no-draft (one token at a time,
+// ignoring the manifest).
 
 let repoFolder = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()  // voice-model-tool
@@ -39,7 +45,7 @@ struct Options {
         while let argument = rest.popFirst() {
             guard argument.hasPrefix("--") else { throw ToolError("unexpected argument \(argument)") }
             let name = String(argument.dropFirst(2))
-            if ["no-verify"].contains(name) {
+            if ["no-verify", "no-draft"].contains(name) {
                 flags.insert(name)
             } else {
                 guard let value = rest.popFirst() else { throw ToolError("--\(name) needs a value") }
@@ -113,6 +119,31 @@ func percentile(_ values: [Double], _ p: Double) -> Double {
 
 func round3(_ value: Double) -> Double { (value * 1000).rounded() / 1000 }
 
+func drafter(_ options: Options) throws -> DrafterChoice {
+    let count = try options.values["draft-tokens"].map { _ in try options.int("draft-tokens", default: 3) }
+    if let count, count < 0 { throw ToolError("--draft-tokens must be 0 or more") }
+    if options.flags.contains("no-draft") {
+        guard options.values["draft"] == nil, count == nil else {
+            throw ToolError("--no-draft can't be combined with --draft or --draft-tokens")
+        }
+        return .off
+    }
+    guard let folder = options.values["draft"] else { return .fromManifest(draftTokens: count) }
+    return .folder(Drafter(folder: URL(fileURLWithPath: folder), draftTokens: count ?? 3))
+}
+
+/// " draft drafter x3" for runner labels, or "" without a drafter.
+func drafterLabel(_ engine: CleanupEngine) async -> String {
+    guard let drafter = await engine.drafter else { return "" }
+    return " draft \(drafter.folder.lastPathComponent) x\(drafter.draftTokens)"
+}
+
+/// "drafted 120, accepted 96 (80%)" for a run with a drafter.
+func draftSummary(drafted: Int, accepted: Int, stopped: String?) -> String {
+    let rate = drafted > 0 ? Int((Double(accepted) / Double(drafted) * 100).rounded()) : 0
+    return "drafted \(drafted), accepted \(accepted) (\(rate)%)" + (stopped.map { "; drafting stopped: \($0)" } ?? "")
+}
+
 func makeEngine(_ options: Options) throws -> CleanupEngine {
     let prompt = try CleanupPrompt.load(from: options.url("prompt", default: repoFolder.appendingPathComponent("shared/cleanup-prompt.json")))
     return CleanupEngine(prompt: prompt)
@@ -151,7 +182,7 @@ func generate(_ options: Options) async throws {
     let out = try options.url("out")
     let maxTokens = try options.int("max-tokens", default: 96)
     let engine = try makeEngine(options)
-    try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"))
+    try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"), drafter: drafter(options))
     let prompt = engine.prompt
     var items: [ParityFile.Item] = []
     for (index, item) in try readJSONL(inputs).enumerated() {
@@ -160,7 +191,10 @@ func generate(_ options: Options) async throws {
         let result = try await engine.generate(messages: messages, maxTokens: maxTokens)
         let id = item.id ?? String(index + 1)
         log("\(id): \(result.promptTokens.count) prompt tokens, \(result.tokens.count) generated, "
-            + String(format: "%.2f s", result.promptSeconds + result.generateSeconds))
+            + String(format: "%.2f s", result.promptSeconds + result.generateSeconds)
+            + (result.draftedTokens > 0 || result.draftingStopped != nil
+                ? ", " + draftSummary(drafted: result.draftedTokens, accepted: result.acceptedTokens,
+                                      stopped: result.draftingStopped) : ""))
         items.append(.init(
             id: id, transcript: item.transcript, vocabulary: item.vocabulary ?? [],
             prompt: try await engine.decode(result.promptTokens),
@@ -173,7 +207,8 @@ func generate(_ options: Options) async throws {
         manifest_sha256: try sha256(folder.appendingPathComponent(ModelManifest.fileName)),
         prompt_version: prompt.version, inputs_sha256: try sha256(inputs),
         chat_template_options: prompt.chatTemplateOptions, max_new_tokens: maxTokens,
-        stop_token_ids: await engine.stopTokens.sorted(), runner: "mlx-swift-lm 3.32.3",
+        stop_token_ids: await engine.stopTokens.sorted(),
+        runner: "mlx-swift-lm 3.32.3" + (await drafterLabel(engine)),
         items: items), to: out)
     log("wrote \(out.path)")
 }
@@ -310,15 +345,20 @@ func evaluate(_ options: Options) async throws -> Bool {
     }
     let inputs = try options.url("inputs", default: repoFolder.appendingPathComponent("evals/\(set).jsonl"))
     let engine = try makeEngine(options)
-    try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"))
+    try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"), drafter: drafter(options))
     let prompt = engine.prompt
     var items: [EvalReport.Item] = []
     var replyFailures: [String: Int] = [:]
     var checkFailures: [String: Int] = [:]
+    var drafted = 0, accepted = 0
+    var stopped: String?
     for (index, input) in try readJSONL(inputs).enumerated() {
         let id = input.id ?? String(index + 1)
         let terms = prompt.usedTerms(input.vocabulary ?? [])
         let result = try await engine.clean(transcript: input.transcript, vocabulary: terms)
+        drafted += result.draftedTokens
+        accepted += result.acceptedTokens
+        stopped = stopped ?? result.draftingStopped
         let reply = CleanupReply.parse(result.text, hitLimit: result.hitLimit, key: prompt.outputKey)
         var checks: [String] = []
         if let cleaned = reply.cleaned {
@@ -341,7 +381,8 @@ func evaluate(_ options: Options) async throws -> Bool {
     let exact = items.contains { $0.expected != nil } ? items.filter { $0.matchesExpected == true }.count : nil
     let manifest = try require(await engine.manifest)
     let report = EvalReport(
-        model_id: manifest.id, set: set, prompt_version: prompt.version, runner: "swift (mlx-swift-lm 3.32.3)",
+        model_id: manifest.id, set: set, prompt_version: prompt.version,
+        runner: "swift (mlx-swift-lm 3.32.3)" + (await drafterLabel(engine)),
         items_total: items.count, items_failed: failed, reply_failures: replyFailures,
         check_failures: checkFailures, exact_matches: exact, items: items)
     if let out = options.values["out"] {
@@ -350,7 +391,8 @@ func evaluate(_ options: Options) async throws -> Bool {
     print("\(manifest.id) \(set): \(items.count - failed)/\(items.count) passed, \(failed) failed"
         + (exact.map { ", \($0) exact matches" } ?? "")
         + (replyFailures.isEmpty ? "" : ", reply failures \(replyFailures)")
-        + (checkFailures.isEmpty ? "" : ", check failures \(checkFailures)"))
+        + (checkFailures.isEmpty ? "" : ", check failures \(checkFailures)")
+        + (await engine.drafter == nil ? "" : "; " + draftSummary(drafted: drafted, accepted: accepted, stopped: stopped)))
     return failed == 0
 }
 
@@ -380,11 +422,16 @@ struct BenchReport: Codable {
     var peak_footprint_gb: Double
     var mlx_peak_gb: Double
     var soak: Soak?
+    var drafter: String?
+    var draft_tokens: Int?
+    var drafted_tokens: Int?
+    var accepted_tokens: Int?
+    var drafting_stopped: String?
 }
 
 /// One cleanup the way the app will run it: generate, parse, hard checks.
-/// Returns the wall-clock seconds and the number of generated tokens.
-func timedCleanup(_ engine: CleanupEngine, _ transcript: String) async throws -> (Double, Int) {
+/// Returns the wall-clock seconds and the generation result.
+func timedCleanup(_ engine: CleanupEngine, _ transcript: String) async throws -> (Double, GenerationResult) {
     let clock = ContinuousClock()
     let start = clock.now
     let result = try await engine.clean(transcript: transcript)
@@ -393,7 +440,7 @@ func timedCleanup(_ engine: CleanupEngine, _ transcript: String) async throws ->
     if let cleaned = reply.cleaned {
         _ = HardChecks.check(transcript: transcript, cleaned: cleaned)
     }
-    return ((clock.now - start).seconds, result.tokens.count)
+    return ((clock.now - start).seconds, result)
 }
 
 func bench(_ options: Options) async throws {
@@ -403,16 +450,25 @@ func bench(_ options: Options) async throws {
     let inputs = try readJSONL(try options.url("inputs", default: repoFolder.appendingPathComponent("evals/bench.jsonl")))
     guard !inputs.isEmpty else { throw ToolError("no bench inputs") }
     let engine = try makeEngine(options)
-    let cold = try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"))
+    let cold = try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"),
+                                     drafter: drafter(options))
+    let draft = await engine.drafter
     log(String(format: "cold: verify %.2f s, load %.2f s, warm-up %.2f s", cold.verifySeconds, cold.loadSeconds, cold.warmupSeconds))
 
     var warm: [Double] = []
     var tokens: [Int] = []
+    var drafted = 0, accepted = 0
+    var stopped: String?
     for run in 0..<runs {
-        let (seconds, count) = try await timedCleanup(engine, inputs[run % inputs.count].transcript)
+        let (seconds, result) = try await timedCleanup(engine, inputs[run % inputs.count].transcript)
         warm.append(round3(seconds))
-        tokens.append(count)
-        log(String(format: "run %d: %.3f s, %d tokens", run + 1, seconds, count))
+        tokens.append(result.tokens.count)
+        drafted += result.draftedTokens
+        accepted += result.acceptedTokens
+        stopped = stopped ?? result.draftingStopped
+        log(String(format: "run %d: %.3f s, %d tokens", run + 1, seconds, result.tokens.count)
+            + (draft == nil ? "" : ", " + draftSummary(drafted: result.draftedTokens, accepted: result.acceptedTokens,
+                                                       stopped: result.draftingStopped)))
     }
 
     var soak: BenchReport.Soak?
@@ -448,7 +504,9 @@ func bench(_ options: Options) async throws {
         warm_p50_seconds: round3(percentile(warm, 50)), warm_p90_seconds: round3(percentile(warm, 90)),
         runs_within_2s: warm.filter { $0 <= 2 }.count, generated_tokens: tokens,
         peak_footprint_gb: gigabytes(footprint().peak), mlx_peak_gb: gigabytes(UInt64(Memory.peakMemory)),
-        soak: soak)
+        soak: soak, drafter: draft?.folder.lastPathComponent, draft_tokens: draft?.draftTokens,
+        drafted_tokens: draft.map { _ in drafted }, accepted_tokens: draft.map { _ in accepted },
+        drafting_stopped: stopped)
     if let out = options.values["out"] {
         try writeJSON(report, to: URL(fileURLWithPath: out))
     }
@@ -500,6 +558,11 @@ func xpcCheck(_ options: Options) async throws -> Bool {
     let transcript = "um can you check why the build fails on port eight zero eight zero"
     let response = try await client.clean(CleanRequest(transcript: transcript, vocabulary: ["SwiftUI"]))
     let reply = CleanupReply.parse(response.reply ?? "", hitLimit: response.hitLimit, key: prompt.outputKey)
+    if try ModelManifest.load(folder: folder).drafter != nil {
+        let problem = await draftingProblem(engine, status: loaded.status, responses: [response])
+        expect(problem == nil, "drafts with the manifest's drafter: "
+               + (problem ?? "\(response.draftedTokens ?? 0) tokens drafted"))
+    }
     expect(response.error == nil && response.generatedTokens > 0,
            "cleans: \(String(reflecting: reply.cleaned ?? response.reply ?? response.error ?? "")) "
            + String(format: "(%.2f s)", response.promptSeconds + response.generateSeconds))
@@ -543,15 +606,30 @@ func xpcCheck(_ options: Options) async throws -> Bool {
 
 // ---- thought-check -------------------------------------------------------------
 
-/// Times every clean call that passes through it.
+/// Why a folder whose manifest names a drafter isn't really drafting, or nil:
+/// the engine has no drafter, the helper reported a problem, or a cleanup
+/// drafted nothing or stopped drafting.
+func draftingProblem(_ engine: CleanupEngine, status: CleanupStatus?, responses: [CleanResponse]) async -> String? {
+    if await engine.drafter == nil {
+        return "no drafter loaded (\(await engine.drafterProblem ?? status?.drafterProblem ?? "no reason given"))"
+    }
+    if let problem = status?.drafterProblem { return problem }
+    if let problem = responses.lazy.compactMap(\.drafterProblem).first { return problem }
+    if responses.reduce(0, { $0 + ($1.draftedTokens ?? 0) }) == 0 { return "no tokens were drafted" }
+    return nil
+}
+
+/// Times every clean call that passes through it, and keeps the replies.
 final class TimingHelper: CleanupHelper, @unchecked Sendable {
     let inner: CleanupClient
     private let lock = NSLock()
     private var times: [(words: Int, seconds: Double)] = []
+    private var replies: [CleanResponse] = []
 
     init(_ inner: CleanupClient) { self.inner = inner }
 
     var pieces: [(words: Int, seconds: Double)] { lock.withLock { times } }
+    var responses: [CleanResponse] { lock.withLock { replies } }
     func reset() { lock.withLock { times = [] } }
 
     func status(timeout: Duration) async throws -> CleanupStatus { try await inner.status(timeout: timeout) }
@@ -565,7 +643,9 @@ final class TimingHelper: CleanupHelper, @unchecked Sendable {
             let seconds = (ContinuousClock.now - start).seconds
             lock.withLock { times.append((request.transcript.split(separator: " ").count, seconds)) }
         }
-        return try await inner.clean(request, timeout: timeout)
+        let response = try await inner.clean(request, timeout: timeout)
+        lock.withLock { replies.append(response) }
+        return response
     }
 }
 
@@ -675,6 +755,107 @@ func thoughtCheck(_ options: Options) async throws -> Bool {
     expect(row == e2e.record && row?.promptVersion == prompt.version && row?.modelID == modelID,
            "row: cleanup_status \(row?.status ?? "-"), cleanup_model_id \(row?.modelID ?? "-"), "
            + "cleanup_ms \(row?.milliseconds ?? 0), prompt_version \(row?.promptVersion ?? "-")")
+
+    // A model whose manifest names a drafter must really draft: a drafter
+    // that silently fell back would only show up as slower cleanups.
+    if let folder = ModelPaths.folder(forModel: modelID, in: models), try ModelManifest.load(folder: folder).drafter != nil {
+        let status = try await helper.status(timeout: .seconds(5))
+        let responses = helper.responses
+        let problem = await draftingProblem(engine, status: status, responses: responses)
+        let drafted = responses.reduce(0) { $0 + ($1.draftedTokens ?? 0) }
+        let accepted = responses.reduce(0) { $0 + ($1.acceptedTokens ?? 0) }
+        expect(problem == nil, "drafts with the manifest's drafter: " + (problem ?? draftSummary(
+            drafted: drafted, accepted: accepted, stopped: nil) + " over \(responses.count) cleanups"))
+    }
+    return ok
+}
+
+// ---- draft-check ---------------------------------------------------------------
+
+/// Speculative decoding on a folder whose manifest names a drafter, against
+/// plain decoding (`--no-draft`, the app's path before drafters) on the 20
+/// parity inputs at 5 and 6 tokens: the tokens, stop token and hit_limit must
+/// be identical, and the drafter must really draft. Then both fallbacks: a
+/// drafter that can't start (`setFailDraftStart`) and a drafter folder that
+/// doesn't load (a copy of the folder, made of links, with a broken
+/// drafter/config.json) must still give the plain tokens and report why.
+func draftCheck(_ options: Options) async throws -> Bool {
+    let folder = try options.url("model", default: ModelPaths.modelsFolder.appendingPathComponent(CleanupDefaults.modelID))
+    let engine = try makeEngine(options)
+    let inputs = try readJSONL(try options.url("inputs", default: repoFolder.appendingPathComponent("evals/parity.jsonl")))
+    let prompt = engine.prompt
+    var ok = true
+    func expect(_ condition: Bool, _ label: String) {
+        print("\(condition ? "ok  " : "FAIL") \(label)")
+        ok = ok && condition
+    }
+    struct Run: Equatable { var tokens: [Int]; var stop: Int?; var hitLimit: Bool }
+    func runAll(_ limit: Int) async throws -> (runs: [Run], drafted: Int, problems: [String]) {
+        var runs: [Run] = [], drafted = 0, problems: [String] = []
+        for item in inputs {
+            let result = try await engine.generate(
+                messages: prompt.messages(transcript: item.transcript, terms: prompt.usedTerms(item.vocabulary ?? [])),
+                maxTokens: limit)
+            runs.append(Run(tokens: result.tokens, stop: result.stopToken, hitLimit: result.hitLimit))
+            drafted += result.draftedTokens
+            if let problem = result.draftingStopped { problems.append(problem) }
+        }
+        return (runs, drafted, problems)
+    }
+    let limits = [5, 6]
+
+    try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"))
+    expect(await engine.drafter != nil, "loads with its drafter"
+        + ((await engine.drafterProblem).map { " (\($0))" } ?? ""))
+    var drafted: [Int: [Run]] = [:]
+    for limit in limits {
+        let run = try await runAll(limit)
+        drafted[limit] = run.runs
+        expect(run.drafted > 0 && run.problems.isEmpty,
+               "\(limit) tokens: drafted \(run.drafted) tokens" + (run.problems.first.map { "; \($0)" } ?? ""))
+    }
+    await engine.setFailDraftStart(true)
+    let failedStart = try await runAll(6)
+    await engine.setFailDraftStart(false)
+
+    try await engine.load(folder: folder, verify: false, drafter: .off)
+    for limit in limits {
+        let plain = try await runAll(limit).runs
+        let same = zip(plain, drafted[limit] ?? []).filter { $0 == $1 }.count
+        expect(same == inputs.count && plain.allSatisfy { $0.tokens.count == limit ? $0.hitLimit : true },
+               "\(limit) tokens: drafted and plain identical on \(same) of \(inputs.count) inputs")
+        if limit == 6 {
+            let fallbackSame = zip(plain, failedStart.runs).filter { $0 == $1 }.count
+            expect(fallbackSame == inputs.count && failedStart.drafted == 0
+                   && failedStart.problems.count == inputs.count
+                   && failedStart.problems.allSatisfy { $0.hasPrefix("drafting couldn't start") },
+                   "a drafter that can't start: plain tokens on \(fallbackSame) of \(inputs.count), reason given")
+        }
+    }
+
+    // A drafter folder that doesn't load: links to every file but a broken
+    // drafter config.
+    let copy = FileManager.default.temporaryDirectory.appendingPathComponent("draft-check-\(UUID().uuidString)")
+        .appendingPathComponent(folder.lastPathComponent)
+    defer { try? FileManager.default.removeItem(at: copy.deletingLastPathComponent()) }
+    let manifest = try ModelManifest.load(folder: folder)
+    for name in manifest.files.keys.sorted() + [ModelManifest.fileName] {
+        let target = copy.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let drafterFolder = manifest.drafter?.folder, name == "\(drafterFolder)/config.json" {
+            try Data("{ broken".utf8).write(to: target)
+        } else {
+            try FileManager.default.createSymbolicLink(at: target, withDestinationURL: folder.appendingPathComponent(name))
+        }
+    }
+    try await engine.load(folder: copy, verify: false)
+    let problem = await engine.drafterProblem
+    expect(await engine.drafter == nil && problem != nil,
+           "a drafter that doesn't load: loads without it (\(problem ?? "no reason given"))")
+    let fallbackLoad = try await runAll(6)
+    let plain6 = drafted[6] ?? []
+    let loadSame = zip(fallbackLoad.runs, plain6).filter { $0 == $1 }.count
+    expect(loadSame == inputs.count, "a drafter that doesn't load: same tokens on \(loadSame) of \(inputs.count)")
     return ok
 }
 
@@ -695,6 +876,7 @@ do {
     case "prompt-check": exit(try await promptCheck(options) ? 0 : 1)
     case "xpc-check": exit(try await xpcCheck(options) ? 0 : 1)
     case "thought-check": exit(try await thoughtCheck(options) ? 0 : 1)
+    case "draft-check": exit(try await draftCheck(options) ? 0 : 1)
     default:
         log("unknown command \(arguments[1])")
         exit(2)

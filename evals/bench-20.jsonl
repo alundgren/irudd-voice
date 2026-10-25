@@ -1,0 +1,10 @@
+{"id": "s01", "transcript": "can you rename the user service class to account service and update every import that points at the old name"}
+{"id": "s02", "transcript": "the settings page crashes when the list is empty so add a guard for that case and show a message"}
+{"id": "s03", "transcript": "um I think the cache key is wrong here it should include the locale otherwise users see the wrong language"}
+{"id": "s04", "transcript": "please add a unit test for the date parser that covers leap years and the last day of each month"}
+{"id": "s05", "transcript": "move the retry logic out of the network client into its own helper and keep the same delays as before"}
+{"id": "s06", "transcript": "so the build takes too long can you check which step got slower since last week and tell me why"}
+{"id": "s07", "transcript": "write a short commit message for these changes that says we fixed the scroll jump on the history list screen"}
+{"id": "s08", "transcript": "change the default timeout from thirty seconds to ten seconds but only for the health check and not the others"}
+{"id": "s09", "transcript": "uh look at the log output from the failing job and find the first error before all the noise starts"}
+{"id": "s10", "transcript": "make the sidebar collapse on small windows and remember the state between launches using the existing settings store please ok"}

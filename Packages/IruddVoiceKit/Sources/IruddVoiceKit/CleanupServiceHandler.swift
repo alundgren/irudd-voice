@@ -4,10 +4,16 @@ import Foundation
 public struct LoadedModel: Equatable, Sendable {
     public var id: String
     public var seconds: Double
+    /// Loaded with a drafter: cleanups use speculative decoding.
+    public var drafting: Bool
+    /// Why the folder's drafter isn't in use; the model loaded without it.
+    public var drafterProblem: String?
 
-    public init(id: String, seconds: Double) {
+    public init(id: String, seconds: Double, drafting: Bool = false, drafterProblem: String? = nil) {
         self.id = id
         self.seconds = seconds
+        self.drafting = drafting
+        self.drafterProblem = drafterProblem
     }
 }
 
@@ -129,7 +135,8 @@ public final class CleanupServiceHandler: NSObject, CleanupServiceProtocol, @unc
                 let model = try await backend.load(
                     folder: folder, expectedID: expectedID, verify: request.verify ?? true, order: order)
                 let ready = CleanupStatus(state: .ready, modelID: model.id, modelFolder: folder.path,
-                                          promptVersion: prompt.version)
+                                          promptVersion: prompt.version, drafting: model.drafting,
+                                          drafterProblem: model.drafterProblem)
                 if setState(ready, ifLatest: order) {
                     reply(encode(LoadResponse(status: snapshot(), loadSeconds: model.seconds)))
                 } else {

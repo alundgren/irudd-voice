@@ -30,6 +30,28 @@ public struct ModelManifest: Codable, Equatable, Sendable {
         }
     }
 
+    /// A drafter for speculative decoding, in a subfolder of the model folder.
+    public struct Drafter: Codable, Equatable, Sendable {
+        public var repo: String
+        public var revision: String
+        /// The subfolder holding the drafter's config.json and weights.
+        public var folder: String
+        /// Tokens drafted per round.
+        public var draftTokens: Int
+
+        enum CodingKeys: String, CodingKey {
+            case repo, revision, folder
+            case draftTokens = "draft_tokens"
+        }
+
+        public init(repo: String, revision: String, folder: String, draftTokens: Int) {
+            self.repo = repo
+            self.revision = revision
+            self.folder = folder
+            self.draftTokens = draftTokens
+        }
+    }
+
     public var schema: Int
     public var id: String
     public var family: String
@@ -43,10 +65,11 @@ public struct ModelManifest: Codable, Equatable, Sendable {
     public var quantization: Quantization?
     public var files: [String: String]
     public var training: Training?
+    public var drafter: Drafter?
     public var createdAt: String
 
     enum CodingKeys: String, CodingKey {
-        case schema, id, family, quantization, files, training
+        case schema, id, family, quantization, files, training, drafter
         case baseRepo = "base_repo"
         case baseRevision = "base_revision"
         case sourceRepo = "source_repo"
@@ -70,7 +93,8 @@ public struct ModelManifest: Codable, Equatable, Sendable {
         return manifest
     }
 
-    /// Reads `<folder>/manifest.json`, refusing a missing file or an unknown schema.
+    /// Reads `<folder>/manifest.json`, refusing a missing file, an unknown
+    /// schema or a bad `drafter` field.
     public static func load(folder: URL) throws -> ModelManifest {
         let url = folder.appendingPathComponent(fileName)
         guard let data = try? Data(contentsOf: url) else {
@@ -81,7 +105,33 @@ public struct ModelManifest: Codable, Equatable, Sendable {
         guard schema == supportedSchema else {
             throw ModelFolderError.unknownSchema(schema)
         }
-        return try JSONDecoder().decode(ModelManifest.self, from: data)
+        let manifest = try JSONDecoder().decode(ModelManifest.self, from: data)
+        if let problem = manifest.drafterProblem {
+            throw ModelFolderError.badDrafter(problem)
+        }
+        return manifest
+    }
+
+    /// What's wrong with `drafter`, or nil: it needs a repo, a revision, a
+    /// folder name that follows the model id rule and whose config.json is in
+    /// `files`, and at least 1 draft token. Same rule as the CLI (models.py
+    /// drafter_problem).
+    public var drafterProblem: String? {
+        guard let drafter else { return nil }
+        if drafter.repo.isEmpty || drafter.revision.isEmpty { return "drafter needs a repo and a revision" }
+        guard ModelPaths.isValidID(drafter.folder) else {
+            return "drafter folder \(drafter.folder) must be one plain name inside the model folder"
+        }
+        guard drafter.draftTokens >= 1 else { return "drafter draft_tokens must be at least 1" }
+        guard files["\(drafter.folder)/config.json"] != nil else {
+            return "drafter folder \(drafter.folder)/ has no config.json in the manifest"
+        }
+        return nil
+    }
+
+    /// The drafter's folder inside `folder`, when the manifest names one.
+    public func drafterFolder(in folder: URL) -> URL? {
+        drafter.map { folder.appendingPathComponent($0.folder, isDirectory: true) }
     }
 
     /// Whether this model can run with a prompt version: base models (no
@@ -161,6 +211,7 @@ public enum ModelFolderError: Error, Equatable, LocalizedError {
     case idMismatch(folder: String, manifest: String)
     case checksumMismatch(String)
     case promptVersionMismatch(model: String, current: String)
+    case badDrafter(String)
 
     public var errorDescription: String? {
         switch self {
@@ -172,6 +223,7 @@ public enum ModelFolderError: Error, Equatable, LocalizedError {
         case .checksumMismatch(let name): "\(name) doesn't match its checksum in manifest.json."
         case .promptVersionMismatch(let model, let current):
             "The model was trained on prompt \(model), but the current prompt is \(current)."
+        case .badDrafter(let problem): "manifest.json: \(problem)."
         }
     }
 }

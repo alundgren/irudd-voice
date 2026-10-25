@@ -20,6 +20,8 @@ final class ScriptedHelper: CleanupHelper, @unchecked Sendable {
     var statusCalls: Int { lock.withLock { _statusCalls } }
     /// Thrown by load (the helper didn't answer).
     var loadError: CleanupClientError?
+    /// Reported by a load: the model loaded without its drafter.
+    var loadDrafterProblem: String?
     /// The reply to each clean request; the default echoes the transcript.
     var reply: @Sendable (CleanRequest) throws -> CleanResponse = { request in
         CleanResponse(reply: "{\"cleaned\": \(CleanupPrompt.jsonString(request.transcript))}")
@@ -50,7 +52,8 @@ final class ScriptedHelper: CleanupHelper, @unchecked Sendable {
             return LoadResponse(status: CleanupStatus(state: .failed, error: "checksum"), error: "model.safetensors doesn't match")
         }
         loaded = id
-        return LoadResponse(status: CleanupStatus(state: .ready, modelID: id), loadSeconds: 2)
+        return LoadResponse(status: CleanupStatus(state: .ready, modelID: id, drafting: loadDrafterProblem == nil,
+                                                  drafterProblem: loadDrafterProblem), loadSeconds: 2)
     }
 
     func clean(_ request: CleanRequest, timeout: Duration?) async throws -> CleanResponse {
@@ -171,6 +174,31 @@ func words(_ count: Int, from start: Int = 0) -> String {
 }
 
 struct CleanupCoordinatorTests {
+    /// A drafter problem never changes what's pasted; it's logged as a
+    /// warning, once per reason.
+    @Test func drafterProblemsAreLoggedNotPastedRaw() async throws {
+        let fixture = try CleanupFixture()
+        fixture.helper.loadDrafterProblem = "the drafter didn't load: Invalid JSON"
+        await fixture.coordinator.idleCheck(busy: false)
+        #expect(try await fixture.state("cleanup.status") == "loaded")
+
+        fixture.helper.reply = { request in
+            CleanResponse(reply: "{\"cleaned\": \(CleanupPrompt.jsonString(request.transcript))}",
+                          drafterProblem: "drafting couldn't start: no stageable cache")
+        }
+        let first = await fixture.coordinator.clean("run the tests")
+        let second = await fixture.coordinator.clean("run the slow tests")
+        #expect(first.outcome == .cleaned && first.pasteText == "run the tests")
+        #expect(second.outcome == .cleaned && second.drafterProblem == "drafting couldn't start: no stageable cache")
+
+        let warnings = try fixture.cli().query("SELECT message FROM events WHERE level = 'warning' AND category = 'cleanup' ORDER BY id")
+            .map { $0[0].text ?? "" }
+        #expect(warnings == [
+            "\(CleanupDefaults.modelID) loaded without its drafter, so cleanup is slower: the drafter didn't load: Invalid JSON",
+            "Cleaned without \(CleanupDefaults.modelID)'s drafter, so more slowly: drafting couldn't start: no stageable cache",
+        ])
+    }
+
     @Test func cleansWithTheDefaultModelAndThePromptDeadline() async throws {
         let fixture = try CleanupFixture()
         fixture.helper.reply = { _ in CleanResponse(reply: "{\"cleaned\": \"Change the timeout to fifty seconds, and don't touch the retries.\"}") }

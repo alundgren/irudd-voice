@@ -47,6 +47,9 @@ public struct ThoughtCleanup: Sendable, Equatable {
     public var detail: String
     /// The hard checks the cleaned text failed (`hardCheck` only).
     public var failedChecks: [String] = []
+    /// Why a piece was cleaned without the model's drafter (slower, same
+    /// model), for the events log; nil when nothing went wrong with it.
+    public var drafterProblem: String?
 
     /// Why the heard text was pasted, in plain words for the preview
     /// ("cleanup changed a number"); nil when the cleaned text was used.
@@ -112,16 +115,17 @@ public struct ThoughtCleaner: Sendable {
         let clock = ContinuousClock()
         let start = clock.now
         let pieces = ThoughtPieces.split(transcript, maxWords: maxWords)
+        var drafterProblem: String?
         func finish(_ outcome: CleanupOutcome, _ text: String, _ detail: String,
                     failedChecks: [String] = []) -> ThoughtCleanup {
             let ms = Int64(((clock.now - start).inSeconds * 1000).rounded())
             return ThoughtCleanup(raw: transcript, pasteText: text, outcome: outcome, modelID: modelID,
                                   promptVersion: prompt.version, milliseconds: ms, pieces: pieces.count,
-                                  detail: detail, failedChecks: failedChecks)
+                                  detail: detail, failedChecks: failedChecks, drafterProblem: drafterProblem)
         }
         var cleaned: [String] = []
         for (index, piece) in pieces.enumerated() {
-            switch await clean(piece: piece) {
+            switch await clean(piece: piece, drafterProblem: &drafterProblem) {
             case .success(let text):
                 cleaned.append(text)
             case .failure(let failure):
@@ -142,7 +146,9 @@ public struct ThoughtCleaner: Sendable {
         var failedChecks: [String] = []
     }
 
-    func clean(piece: String) async -> Result<String, Failure> {
+    /// Cleans one piece. Sets `drafterProblem` when the helper reports one
+    /// (the first one a thought meets is kept).
+    func clean(piece: String, drafterProblem: inout String?) async -> Result<String, Failure> {
         let request = CleanRequest(transcript: piece, vocabulary: terms,
                                    deadlineSeconds: prompt.generation.timeoutSeconds)
         let response: CleanResponse
@@ -157,6 +163,7 @@ public struct ThoughtCleaner: Sendable {
         } catch {
             return .failure(Failure(outcome: .helperError, detail: "The helper failed: \(error.localizedDescription)"))
         }
+        if drafterProblem == nil { drafterProblem = response.drafterProblem }
         if response.timedOut {
             return .failure(Failure(outcome: .timeout, detail: String(
                 format: "Cleanup passed its %.0f s deadline.", prompt.generation.timeoutSeconds)))

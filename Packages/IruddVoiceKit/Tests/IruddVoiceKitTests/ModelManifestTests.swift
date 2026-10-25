@@ -9,11 +9,22 @@ struct ModelManifestTests {
     }
 
     /// A model folder with two small files and a matching manifest.
-    func makeFolder(schema: Int = 1, promptVersion: String? = nil) throws -> URL {
+    /// With `drafter`, also a `drafter/` folder and the manifest's drafter field.
+    func makeFolder(schema: Int = 1, promptVersion: String? = nil, drafter: [String: Any]? = nil) throws -> URL {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("irudd-voice-model-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try "{}".write(to: folder.appendingPathComponent("config.json"), atomically: true, encoding: .utf8)
         try "weights".write(to: folder.appendingPathComponent("model.safetensors"), atomically: true, encoding: .utf8)
+        var files = ["config.json": sha("{}"), "model.safetensors": sha("weights")]
+        if drafter != nil {
+            let sub = folder.appendingPathComponent("drafter")
+            try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+            try "{\"model_type\": \"gemma4_assistant\"}".write(to: sub.appendingPathComponent("config.json"),
+                                                               atomically: true, encoding: .utf8)
+            try "drafter".write(to: sub.appendingPathComponent("model.safetensors"), atomically: true, encoding: .utf8)
+            files["drafter/config.json"] = sha("{\"model_type\": \"gemma4_assistant\"}")
+            files["drafter/model.safetensors"] = sha("drafter")
+        }
         let manifest: [String: Any?] = [
             "schema": schema, "id": "test-model", "family": "qwen3_5",
             "base_repo": "Qwen/Qwen3.5-2B", "base_revision": "abc",
@@ -21,8 +32,8 @@ struct ModelManifestTests {
             "tokenizer_sha256": "t", "chat_template_sha256": "c",
             "prompt_version": promptVersion,
             "quantization": ["bits": 4, "group_size": 64],
-            "files": ["config.json": sha("{}"), "model.safetensors": sha("weights")],
-            "training": nil, "created_at": "2026-10-25T10:00:00Z",
+            "files": files,
+            "training": nil, "drafter": drafter, "created_at": "2026-10-25T10:00:00Z",
         ]
         let data = try JSONSerialization.data(withJSONObject: manifest.mapValues { $0 ?? NSNull() })
         try data.write(to: folder.appendingPathComponent("manifest.json"))
@@ -111,6 +122,54 @@ struct ModelManifestTests {
         let trained = try ModelManifest.load(folder: makeFolder(promptVersion: "cleanup-v1"))
         #expect(trained.accepts(promptVersion: "cleanup-v1"))
         #expect(!trained.accepts(promptVersion: "cleanup-v2"))
+    }
+
+    /// The gemma-4-e2b drafter field, with `change` (JSON) applied.
+    static func assistant(_ change: String = "{}") throws -> [String: Any] {
+        let base: [String: Any] = [
+            "repo": "google/gemma-4-E2B-it-assistant", "revision": "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df",
+            "folder": "drafter", "draft_tokens": 3,
+        ]
+        let changes = try JSONSerialization.jsonObject(with: Data(change.utf8)) as? [String: Any] ?? [:]
+        return base.merging(changes) { $1 }
+    }
+
+    @Test func readsAndVerifiesADrafter() throws {
+        let folder = try makeFolder(drafter: Self.assistant())
+        let manifest = try ModelManifest.load(folder: folder)
+        #expect(manifest.drafter == .init(repo: "google/gemma-4-E2B-it-assistant",
+                                          revision: "2d874ef7d29f9a30599a1e4b3c1cbc9595f005df",
+                                          folder: "drafter", draftTokens: 3))
+        #expect(manifest.drafterFolder(in: folder) == folder.appendingPathComponent("drafter", isDirectory: true))
+        try manifest.verify(folder: folder)
+        // The drafter's files are checked like the rest.
+        try "changed".write(to: folder.appendingPathComponent("drafter/model.safetensors"), atomically: true, encoding: .utf8)
+        #expect(throws: ModelFolderError.checksumMismatch("drafter/model.safetensors")) { try manifest.verify(folder: folder) }
+    }
+
+    @Test func noDrafterIsFine() throws {
+        // Newer manifests write null; older ones have no drafter key.
+        let folder = try makeFolder()
+        #expect(try ModelManifest.load(folder: folder).drafter == nil)
+        let url = folder.appendingPathComponent("manifest.json")
+        var object = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
+        #expect(object.removeValue(forKey: "drafter") != nil)
+        try JSONSerialization.data(withJSONObject: object).write(to: url)
+        let older = try ModelManifest.load(folder: folder)
+        #expect(older.drafter == nil && older.drafterFolder(in: folder) == nil)
+    }
+
+    @Test(arguments: [
+        (#"{"folder": "../elsewhere"}"#, "drafter folder ../elsewhere must be one plain name inside the model folder"),
+        (#"{"folder": ".drafter"}"#, "drafter folder .drafter must be one plain name inside the model folder"),
+        (#"{"folder": "a/b"}"#, "drafter folder a/b must be one plain name inside the model folder"),
+        (#"{"folder": "other"}"#, "drafter folder other/ has no config.json in the manifest"),
+        (#"{"draft_tokens": 0}"#, "drafter draft_tokens must be at least 1"),
+        (#"{"revision": ""}"#, "drafter needs a repo and a revision"),
+    ])
+    func refusesABadDrafter(change: String, problem: String) throws {
+        let folder = try makeFolder(drafter: Self.assistant(change))
+        #expect(throws: ModelFolderError.badDrafter(problem)) { try ModelManifest.load(folder: folder) }
     }
 
     @Test func modelIDs() {
