@@ -29,7 +29,7 @@ empty). Build the messages exactly as shared/README.md says.
  "inputs_sha256": "<sha256 of evals/parity.jsonl bytes>",
  "chat_template_options": {"enable_thinking": false},
  "max_new_tokens": 96,
- "stop_token_ids": [248046],
+ "stop_token_ids": [248044, 248046],
  "mlx_version": "0.32.4",
  "mlx_lm_version": "0.32.2",
  "items": [
@@ -68,7 +68,8 @@ empty). Build the messages exactly as shared/README.md says.
 - `stop_token_ids` = the tokenizer's eos IDs, including those in
   `config.json` and `generation_config.json`, plus the chat template's
   end-of-turn token (`<|im_end|>`, `<turn|>` or `<end_of_turn>`, whichever is
-  a single token in the vocabulary).
+  a single token in the vocabulary) and `<|endoftext|>` when the vocabulary
+  has it (Qwen3.5: 248044).
 - `text` is `generated_token_ids` decoded with special tokens kept.
 
 `prompt_sha256` and `hardchecks_sha256` say which prompt and hard checks the

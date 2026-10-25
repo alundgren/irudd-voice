@@ -91,6 +91,17 @@ def chat_template_sha256(folder: Path) -> str | None:
     return None
 
 
+def model_files(folder: Path) -> list[str]:
+    """The folder's files that belong to the model, as relative paths: every
+    file except manifest.json and anything whose name, or a folder above it,
+    starts with "." (.DS_Store, editor and sync leftovers)."""
+    return sorted(
+        rel.as_posix()
+        for rel in (p.relative_to(folder) for p in folder.rglob("*") if p.is_file())
+        if rel.as_posix() != "manifest.json" and not any(part.startswith(".") for part in rel.parts)
+    )
+
+
 def utc_now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -109,11 +120,7 @@ def write_manifest(
         raise ModelError(f"model id {model_id!r} must match {ID_PATTERN.pattern}")
     if (training is None) != (prompt_version is None):
         raise ModelError("a trained model needs a prompt_version and a base model must not have one")
-    files = {
-        p.relative_to(folder).as_posix(): sha256_file(p)
-        for p in sorted(folder.rglob("*"))
-        if p.is_file() and p.name != "manifest.json"
-    }
+    files = {name: sha256_file(folder / name) for name in model_files(folder)}
     if "tokenizer.json" not in files:
         raise ModelError(f"{folder} has no tokenizer.json")
     manifest = {
@@ -161,7 +168,7 @@ def verify(folder: Path) -> list[str]:
     files = manifest.get("files")
     if not isinstance(files, dict) or not files:
         return problems + ["manifest lists no files"]
-    on_disk = {p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file() and p.name != "manifest.json"}
+    on_disk = set(model_files(folder))
     for name in sorted(on_disk - files.keys()):
         problems.append(f"{name}: not in the manifest")
     for name, expected in sorted(files.items()):

@@ -72,7 +72,7 @@ def test_stop_token_ids_add_end_of_turn():
     gemma = FakeTokenizer(eos_ids={1, 106, 50}, eos_id=1, vocab={"<turn|>": 106, "<|turn>": 105})
     assert generation.stop_token_ids(gemma) == {1, 50, 106}
     qwen = FakeTokenizer(eos_ids=set(), eos_id=248046, vocab={"<|im_end|>": 248046, "<|endoftext|>": 248044})
-    assert generation.stop_token_ids(qwen) == {248046}
+    assert generation.stop_token_ids(qwen) == {248044, 248046}
     other = FakeTokenizer(eos_ids={2}, eos_id=None, vocab={"<end_of_turn>": 3})
     assert generation.stop_token_ids(other) == {2, 3}
 

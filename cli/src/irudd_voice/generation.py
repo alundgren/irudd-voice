@@ -19,6 +19,9 @@ from .models import MissingML, read_manifest
 # Chat-template end-of-turn tokens. A model stops at these as well as at the
 # eos IDs in config.json / generation_config.json (Gemma lists <turn|> there).
 END_OF_TURN_TOKENS = ("<|im_end|>", "<turn|>", "<end_of_turn>")
+# Also stop at these, but never train a reply to end with them: Qwen's
+# end-of-text (248044 in Qwen3.5), which can follow a reply without <|im_end|>.
+EXTRA_STOP_TOKENS = ("<|endoftext|>",)
 
 
 @dataclass
@@ -88,12 +91,12 @@ class Model:
 
 def stop_token_ids(tokenizer) -> set[int]:
     """eos IDs (mlx-lm merges generation_config.json's into the tokenizer)
-    plus the chat template's end-of-turn token."""
+    plus the chat template's end-of-turn token and Qwen's <|endoftext|>."""
     ids = set(tokenizer.eos_token_ids)
     if tokenizer.eos_token_id is not None:
         ids.add(tokenizer.eos_token_id)
     vocab = tokenizer.get_vocab()
-    ids.update(vocab[t] for t in END_OF_TURN_TOKENS if t in vocab)
+    ids.update(vocab[t] for t in (*END_OF_TURN_TOKENS, *EXTRA_STOP_TOKENS) if t in vocab)
     return ids
 
 

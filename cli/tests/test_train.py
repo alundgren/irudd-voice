@@ -139,3 +139,13 @@ def test_reply_loss_counts_only_reply_tokens():
     targets = batch[:, 1:]
     mask = train.reply_mask(lengths, mx.arange(1, targets.shape[1] + 1))
     assert [t for t, m in zip(targets[0].tolist(), mask[0].tolist()) if m] == [21, 22, 23]
+
+
+def test_training_replies_end_with_the_end_of_turn_token_not_end_of_text():
+    class Tok:
+        eos_token_id = 0
+
+        def get_vocab(self):
+            return {"<|endoftext|>": 248044, "<|im_end|>": 248046}
+
+    assert train.end_of_turn_id(Tok()) == 248046

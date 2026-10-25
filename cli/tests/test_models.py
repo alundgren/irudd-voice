@@ -184,3 +184,20 @@ def test_register_records_only_verified_folders(tmp_path, app_db, capsys):
     assert cli.main(["models", "register", str(folder), "--db", str(app_db)]) == 1
     assert "doesn't verify" in capsys.readouterr().err
     assert model_rows(app_db) == []
+
+
+def test_dotfiles_are_not_part_of_a_model(tmp_path):
+    folder = fake_folder(tmp_path / "qwen3.5-2b-base-q4")
+    (folder / ".DS_Store").write_bytes(b"finder")
+    (folder / ".cache").mkdir()
+    (folder / ".cache" / "x.json").write_text("{}")
+    manifest = models.write_manifest(folder, folder.name, models.candidate("qwen3.5-2b"))
+    assert not any(name.startswith(".") for name in manifest["files"])
+    assert ".cache/x.json" not in manifest["files"]
+    # Dotfiles appearing, changing or vanishing later don't fail verification.
+    (folder / ".DS_Store").unlink()
+    (folder / "._model.safetensors").write_bytes(b"resource fork")
+    assert models.verify(folder) == []
+    # A real file still counts.
+    (folder / "extra.bin").write_bytes(b"x")
+    assert models.verify(folder) == ["extra.bin: not in the manifest"]
