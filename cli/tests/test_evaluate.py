@@ -1,0 +1,80 @@
+"""Eval scoring with a fake generator, and the committed eval sets."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from irudd_voice import evaluate, hardchecks, parity, train
+
+EVALS = Path(__file__).resolve().parents[2] / "evals"
+
+
+def rows(name):
+    return [json.loads(line) for line in (EVALS / f"{name}.jsonl").read_text().splitlines()]
+
+
+def test_similarity():
+    assert evaluate.similarity("abc", "abc") == 1.0
+    assert evaluate.similarity("", "") == 1.0
+    assert evaluate.similarity("abcd", "abce") == 0.75
+    assert evaluate.similarity("", "abc") == 0.0
+    assert evaluate.edit_distance("kitten", "sitting") == 3
+
+
+def expected_by_transcript():
+    return {r["transcript"]: r["expected"] for name in evaluate.SETS for r in rows(name)}
+
+
+def fake(reply_for, hit_limit=False):
+    return lambda transcript, terms: evaluate.Output(reply_for(transcript), hit_limit, 0.1)
+
+
+def test_a_perfect_model_passes():
+    expected = expected_by_transcript()
+    report = evaluate.run(fake(lambda t: train.reply_text(expected[t])), list(evaluate.SETS), log=lambda _: None)
+    questions = report["sets"]["questions"]["summary"]
+    transcripts = report["sets"]["transcripts"]["summary"]
+    assert questions["passed"] == 40 and transcripts["passed"] == 50
+    assert transcripts["mean_similarity"] == 1.0 and transcripts["exact"] == 50
+    assert report["hard_check_gate"] == {"questions_with_failures": 0, "transcripts_with_failures": 0,
+                                         "passes_hard_checks": True}
+    assert report["sets"]["questions"]["sha256"] and report["prompt_version"] == "cleanup-v1"
+
+
+def test_answering_and_broken_replies_fail():
+    answers = evaluate.run(fake(lambda t: train.reply_text("Sure, here is the answer you wanted.")), ["questions"],
+                           log=lambda _: None)
+    summary = answers["sets"]["questions"]["summary"]
+    assert summary["passed"] == 0 and summary["failures_by_check"]["answers"] == 40
+    cut = evaluate.run(fake(lambda t: '{"cleaned": "Set the', hit_limit=True), ["transcripts"], log=lambda _: None)
+    assert cut["sets"]["transcripts"]["summary"]["failures_by_check"] == {"cut_off": 50}
+    item = cut["sets"]["transcripts"]["items"][0]
+    assert item["similarity"] is None
+    assert item["pasted_similarity"] == round(evaluate.similarity(item["transcript"], item["expected"]), 4)
+    assert "passes_hard_checks" not in cut["hard_check_gate"]
+
+
+def test_percentiles():
+    assert evaluate.percentile([3, 1, 2], 50) == 2
+    assert evaluate.percentile(list(range(1, 11)), 90) == 9
+    assert evaluate.percentile([], 50) is None
+
+
+@pytest.mark.parametrize("name, count", [("questions", 40), ("transcripts", 50), ("parity", 20)])
+def test_eval_sets_are_valid(name, count):
+    items = rows(name)
+    assert len(items) == count
+    assert len({i["id"] for i in items}) == count
+    for item in items:
+        assert item["transcript"].strip()
+        if name != "parity":
+            assert hardchecks.check(item["transcript"], item["expected"]) == [], item["id"]
+
+
+def test_parity_inputs_cover_escaping():
+    text = "".join(i["transcript"] for i in rows("parity"))
+    for char in ("/", "’", '"', "\n", "\\", "\t"):
+        assert char in text
+    assert any(i["vocabulary"] for i in rows("parity"))
+    assert parity.DEFAULT_INPUTS == EVALS / "parity.jsonl"

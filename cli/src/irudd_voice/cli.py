@@ -121,6 +121,18 @@ def add_ml_commands(commands) -> None:
     verify = models_commands.add_parser("verify", help="check a model folder's manifest and checksums")
     verify.add_argument("dir", type=Path)
 
+    train = commands.add_parser("train", help="fine-tune a candidate with LoRA (needs --group ml)")
+    train.add_argument("candidate", help="qwen3.5-2b, gemma-4-e2b or qwen3.5-4b")
+    train.add_argument("--tiny", action="store_true",
+                       help="40 synthetic examples, to check the training round trip")
+    train.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR,
+                       help="where model folders go (default: the app's)")
+
+    evaluate = commands.add_parser("eval", help="run a model over the fixed eval sets (needs --group ml)")
+    evaluate.add_argument("dir", type=Path, help="model folder")
+    evaluate.add_argument("--set", choices=("questions", "transcripts", "all"), default="all")
+    evaluate.add_argument("--out", type=Path, help="write the full JSON report here (default: print it)")
+
     from .parity import DEFAULT_INPUTS
 
     parity = commands.add_parser("parity-reference", help="greedy token IDs for the Swift parity check (needs --group ml)")
@@ -138,7 +150,35 @@ def parity_command(args) -> int:
     return 0
 
 
-ML_COMMANDS = {"models": models_command, "parity-reference": parity_command}
+def train_command(args) -> int:
+    from . import models, train
+
+    if not args.tiny:
+        print("irudd-voice: only `train --tiny <candidate>` exists so far; training on labeled thoughts comes "
+              "with the dataset tools", file=sys.stderr)
+        return 2
+    result = train.train_tiny(models.candidate(args.candidate), args.models_dir)
+    print(json.dumps({"folder": str(result.folder), "timings": result.timings,
+                      "training": result.manifest["training"]}, indent=2))
+    return 0
+
+
+def eval_command(args) -> int:
+    from . import evaluate
+
+    sets = list(evaluate.SETS) if args.set == "all" else [args.set]
+    report = evaluate.evaluate_folder(args.dir, sets, log=lambda line: print(line, file=sys.stderr))
+    text = json.dumps(report, indent=1, ensure_ascii=False) + "\n"
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(text)
+    summary = {name: s["summary"] for name, s in report["sets"].items()}
+    print(json.dumps({"model_id": report["model_id"], "summary": summary,
+                      "hard_check_gate": report["hard_check_gate"]}, indent=2) if args.out else text, end="\n")
+    return 0
+
+
+ML_COMMANDS = {"eval": eval_command, "train": train_command, "models": models_command, "parity-reference": parity_command}
 
 
 def main(argv: list[str] | None = None) -> int:

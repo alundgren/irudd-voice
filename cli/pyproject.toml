@@ -22,3 +22,4 @@ build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: loads a real model; runs only with IRUDD_VOICE_SLOW=1 and uv run --group ml"]
