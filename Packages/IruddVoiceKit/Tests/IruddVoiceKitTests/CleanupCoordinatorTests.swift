@@ -775,7 +775,7 @@ struct DeliveryLineTests {
             log.add("pasting \(item)")
             // The paste waits for held keys, then asks.
             await keyWait.wait()
-            let stop = line.shouldStop(number, at: .afterKeyWait)
+            let stop = line.shouldStop(number, at: .check)
             log.add("\(item) \(thrownAway || stop ? "stopped" : "pasted")")
         })
         await waitUntil { log.all == ["pasting A"] }

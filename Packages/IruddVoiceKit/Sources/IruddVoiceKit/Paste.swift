@@ -94,11 +94,12 @@ public enum PasteOutcome: Equatable, Sendable {
     case stopped
 }
 
-/// Where a paste asks whether to stop: after waiting for held keys, and
-/// right before ⌘V. After `beforeKeystroke` says go, the paste can't be
-/// stopped any more.
+/// Where a paste asks whether to stop. `check`: after waiting for held keys,
+/// and before giving up with `.waiting`, so a thrown-away thought is never
+/// left as waiting text. `beforeKeystroke`: the last time, right before the
+/// final focus check and ⌘V; after it says go, the paste can't be stopped.
 public enum PasteStage: Sendable {
-    case afterKeyWait
+    case check
     case beforeKeystroke
 }
 
@@ -167,36 +168,43 @@ public actor Paster {
 
     private func pasteNow(_ text: String, into target: PasteTarget,
                           shouldStop: @Sendable (PasteStage) async -> Bool) async -> PasteOutcome {
-        guard keyboard.canPost() else { return .waiting(.noAccessibility) }
+        /// Not pasting: stopped if Throw Away marked it, otherwise waiting.
+        func notPasted(_ reason: WaitReason) async -> PasteOutcome {
+            await shouldStop(.check) ? .stopped : .waiting(reason)
+        }
+        guard keyboard.canPost() else { return await notPasted(.noAccessibility) }
 
         // A shortcut's ⌘ still held would turn ⌘V into something else.
         let clock = ContinuousClock()
         let deadline = clock.now + settings.modifierWait
         while keyboard.modifiersHeld() {
-            if clock.now >= deadline { return .waiting(.keysHeld) }
+            if clock.now >= deadline { return await notPasted(.keysHeld) }
             try? await Task.sleep(for: settings.modifierPoll)
         }
-        if await shouldStop(.afterKeyWait) { return .stopped }
+        if await shouldStop(.check) { return .stopped }
 
-        guard let now = focus.current(), now.isSame(as: target) else { return .waiting(.targetMoved) }
+        guard let now = focus.current(), now.isSame(as: target) else { return await notPasted(.targetMoved) }
 
         let saved: ClipboardSnapshot
         switch clipboard.snapshot() {
         case .complete(let snapshot): saved = snapshot
-        case .denied: return .waiting(.clipboardDenied)
-        case .incomplete: return .waiting(.clipboardIncomplete)
+        case .denied: return await notPasted(.clipboardDenied)
+        case .incomplete: return await notPasted(.clipboardIncomplete)
         }
 
         let ours = clipboard.writeDictation(text)
 
-        // Last checks right before the keystroke.
-        guard let still = focus.current(), still.isSame(as: target) else {
-            if clipboard.changeCount == ours { clipboard.restore(saved) }
-            return .waiting(.targetMoved)
-        }
+        // The last chance to stop. After this the thought is committed: a
+        // failed focus check below makes it waiting text, which Throw Away
+        // can still drop.
         if await shouldStop(.beforeKeystroke) {
             if clipboard.changeCount == ours { clipboard.restore(saved) }
             return .stopped
+        }
+        // Last focus check, with nothing awaited between it and ⌘V.
+        guard let still = focus.current(), still.isSame(as: target) else {
+            if clipboard.changeCount == ours { clipboard.restore(saved) }
+            return .waiting(.targetMoved)
         }
         keyboard.postCommand(keyCode: keyboard.pasteKeyCode())
 

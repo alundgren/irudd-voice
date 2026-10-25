@@ -71,8 +71,8 @@ final class AppModel {
     private(set) var modelOverview: ModelOverview?
     /// Why cleanup can't run at all (the app is missing its prompt file).
     private(set) var cleanupProblem: String?
-    /// The text last pasted (or held) for a row, for Paste last again.
-    private var lastDelivered: (id: Int64, text: String)?
+    /// What Paste last again pastes; never a thrown-away thought.
+    private var pasteAgain = PasteAgain()
 
     // MARK: Hotkeys and pasting
 
@@ -351,6 +351,7 @@ final class AppModel {
         case .noText(let id):
             clearPreview(number)
             if discard {
+                pasteAgain.thrownAway(id: id)
                 try? await store.markDiscarded(id: id)
                 log(.info, "paste", "Thrown away, not pasted (#\(id))")
             } else {
@@ -359,18 +360,21 @@ final class AppModel {
         case .text(let id, let raw, let cleanup):
             if discard {
                 clearPreview(number)
+                pasteAgain.thrownAway(id: id)
                 try? await store.markDiscarded(id: id)
                 log(.info, "paste", "Thrown away, not pasted (#\(id))")
                 return
             }
             let text = cleanup?.pasteText ?? raw
-            lastDelivered = (id, text)
             var waitReason: WaitReason?
             if let target {
                 // Throw Away can still stop it until right before ⌘V.
-                let outcome = await paster.paste(text, into: target, shouldStop: { [delivery] stage in
+                var outcome = await paster.paste(text, into: target, shouldStop: { [delivery] stage in
                     await delivery.shouldStop(number, at: stage)
                 })
+                // Marked after the paste gave up: thrown away, not waiting.
+                if case .waiting = outcome, delivery.isThrownAway(number) { outcome = .stopped }
+                pasteAgain.delivered(id: id, text: text, outcome: outcome)
                 record(outcome, id: id, text: text, target: target)
                 switch outcome {
                 case .pasted: break
@@ -380,6 +384,7 @@ final class AppModel {
                     return
                 }
             } else {
+                pasteAgain.delivered(id: id, text: text, outcome: .waiting(.targetMoved))
                 hold(WaitingText(id: id, text: text, reason: .targetMoved))
                 waitReason = .targetMoved
             }
@@ -498,6 +503,7 @@ final class AppModel {
             guard let waiting else { return }
             Task { try? await store?.markDiscarded(id: waiting.id) }
             log(.info, "paste", "Waiting text thrown away (#\(waiting.id))")
+            pasteAgain.thrownAway(id: waiting.id)
             waitingCleared()
         case .nothing:
             break
@@ -505,12 +511,7 @@ final class AppModel {
     }
 
     private func textToPasteAgain() -> (Int64, String)? {
-        if let waiting { return (waiting.id, waiting.text) }
-        if let lastDelivered, lastDelivered.id == lastChunk?.id { return lastDelivered }
-        if let last = lastChunk, last.status == "transcribed", let text = last.rawText, !text.isEmpty {
-            return (last.id, text)
-        }
-        return nil
+        pasteAgain.text(waiting: waiting.map { ($0.id, $0.text) }, newest: lastChunk).map { ($0.id, $0.text) }
     }
 
     private func hotkeyPressed(_ action: HotkeyAction) {

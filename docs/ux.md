@@ -146,8 +146,11 @@ up** meanwhile; a 50-word thought takes about 1.2 s.
   back, so the text waits instead of being pasted. That's why setup asks
   for it.
 - Hotkeys (none set by default, Settings → Hotkeys): **Start/stop
-  thought**, **Paste last again** (pastes the waiting or last text where
-  your cursor is now) and **Throw away current**. Throw away acts on what
+  thought**, **Paste last again** (pastes the waiting text, or else the
+  newest thought's text as it was pasted, where your cursor is now) and
+  **Throw away current**. Thrown-away text is never pasted again: if the
+  newest thought was thrown away, Paste last again pastes nothing, not an
+  older thought. Throw away acts on what
   the icon shows: while **Hearing you** it ends the thought, on **Cleaning
   up** it drops the newest thought still being cleaned (up to the moment
   it's pasted), and on **Text waiting** it drops the waiting text. Nothing
