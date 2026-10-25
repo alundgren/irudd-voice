@@ -469,11 +469,14 @@ final class AppModel {
     /// Paste here: pastes the waiting (or last) text into whatever has focus
     /// once the panel has closed.
     func pasteHere() {
-        guard let (id, text) = textToPasteAgain() else { return }
+        guard let (picked, _) = textToPasteAgain() else { return }
         // Give focus back to the app you were in before opening the panel.
         if NSApp.isActive { NSApp.hide(nil) }
         Task {
             try? await Task.sleep(for: .milliseconds(350))
+            // Thrown away during the wait: paste nothing.
+            guard let (id, text) = pasteAgain.recheck(id: picked, waiting: waiting.map { ($0.id, $0.text) },
+                                                      newest: lastChunk) else { return }
             let target = focus.current()
             let outcome = await paster.pasteHere(text)
             record(outcome, id: id, text: text, target: target)

@@ -97,6 +97,15 @@ struct StorageTests {
         #expect(done.status == "transcribed")
         #expect(done.rawText == "change the timeout")
         #expect(done.durationMs == 4000)
+        #expect(done.pastedText == nil && done.cleanedText == nil)
+
+        // Paste last again reads these after a restart.
+        try await store.markCleanup(id: id, CleanupRecord(status: "cleaned", cleanedText: "Change the timeout.",
+                                                          modelID: "m", milliseconds: 300, promptVersion: "cleanup-v1"))
+        try await store.markPaste(id: id, status: "pasted", text: "Change the timeout.")
+        let pasted = try #require(try await store.chunk(id: id))
+        #expect(pasted.cleanedText == "Change the timeout.")
+        #expect(pasted.pastedText == "Change the timeout.")
     }
 
     @Test func failedRecognitionKeepsTheAudio() async throws {
