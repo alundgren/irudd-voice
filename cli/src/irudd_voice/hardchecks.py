@@ -2,9 +2,10 @@
 
 The app (Swift) runs the same checks before pasting a model's reply, and
 training's eval and the labeling tool run these. Both implementations must
-agree on every case in shared/fixtures/hard-checks.json.
+agree on every case in shared/fixtures/hard-checks.json; the exact rules are
+written down in shared/README.md ("Hard checks").
 
-A check failing means "don't trust this output": the app pastes the raw
+A failing check means "don't trust this output": the app pastes the raw
 transcript instead, eval counts a failure, and labeling rejects the label.
 """
 
@@ -12,33 +13,48 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from dataclasses import dataclass
+
+# The order failures are reported in. Fixtures compare lists exactly.
+CHECK_ORDER = ("dropped", "answers", "question", "numbers", "negation", "identifiers", "new_words")
 
 # Words that start a reply rather than a cleaned-up request.
 ANSWER_OPENERS = (
     "sure", "certainly", "of course", "absolutely", "here is", "here's", "here are",
-    "i'd be happy", "i would be happy", "i can help", "i can't help", "as an ai",
-    "great question", "the answer is", "to do this", "you can ",
+    "i'd be happy", "i would be happy", "i can help", "as an ai", "great question",
+    "the answer is", "to do this", "you can",
 )
 
-# Correction markers: what the speaker says when replacing what came before.
-CORRECTIONS = (
-    "no", "sorry", "i mean", "actually", "rather", "wait", "scratch that", "not that",
-    "make that", "or rather",
-)
+# Said before the real content, or as padding. Ignored when comparing
+# beginnings and when counting kept content.
+FILLERS = {
+    "um", "umm", "uh", "uhh", "er", "erm", "hmm", "so", "okay", "ok", "well", "like",
+    "yeah", "alright", "basically", "just", "right", "actually", "you know", "i mean",
+    "kind of", "sort of",
+}
+
+# Spoken corrections: "fifteen seconds, no, fifty seconds". A marker only
+# counts when what follows restates what came before (see corrected_spans).
+CORRECTION_MARKERS = ("no", "sorry", "i mean", "scratch that", "not that", "make that", "or rather")
 
 NEGATIONS = {
-    "not", "never", "cannot", "without", "nothing", "nobody", "none", "neither", "nor",
-    "don't", "doesn't", "didn't", "isn't", "aren't", "wasn't", "weren't", "can't",
-    "won't", "wouldn't", "shouldn't", "couldn't", "haven't", "hasn't", "hadn't",
-    "mustn't", "needn't", "dont", "doesnt", "didnt", "isnt", "arent", "cant", "wont",
+    "no", "not", "never", "cannot", "without", "nothing", "nobody", "none", "neither", "nor",
+    "don't", "doesn't", "didn't", "isn't", "aren't", "wasn't", "weren't", "can't", "won't",
+    "wouldn't", "shouldn't", "couldn't", "haven't", "hasn't", "hadn't", "mustn't",
+    "needn't", "dont", "doesnt", "didnt", "isnt", "arent", "cant", "wont",
 }
 
 # Words a cleanup may add without changing meaning.
 FUNCTION_WORDS = {
     "a", "an", "the", "and", "or", "but", "to", "of", "in", "on", "at", "for", "with",
-    "is", "are", "be", "it", "its", "it's", "this", "that", "these", "those", "then",
-    "so", "as", "if", "do", "does", "please", "also", "s", "i", "you", "we",
+    "is", "are", "be", "it", "its", "this", "that", "these", "those", "then", "so", "as",
+    "if", "do", "does", "please", "also", "s", "i", "you", "we",
+}
+
+QUESTION_STARTS = {
+    "can", "could", "would", "should", "what", "why", "how", "when", "where", "who",
+    "which", "is", "are", "does", "did", "have", "has", "shall", "may",
 }
 
 CONTRACTIONS = {
@@ -54,15 +70,18 @@ CONTRACTIONS = {
 }
 
 NUMBER_WORDS = {
-    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
-    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
-    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
-    "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
-    "seventy": 70, "eighty": 80, "ninety": 90,
+    "zero": 0, "oh": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
 }
 SCALES = {"hundred": 100, "thousand": 1000, "million": 1_000_000}
 
-THINK_TAGS = ("<think>", "</think>")
+# Thinking markers: Qwen (<think>) and Gemma 4 (<|channel>thought … <channel|>, <|think|>).
+THINK_TAGS = ("<think>", "</think>", "<|channel>", "<channel|>", "<|think|>")
+
+STEM_SUFFIXES = ("ing", "ed", "es", "s")
 
 
 @dataclass(frozen=True)
@@ -73,8 +92,9 @@ class Reply:
     failure: str | None
 
 
-def parse_reply(text: str, key: str = "cleaned") -> Reply:
-    """Reads the model's raw reply. See shared/README.md, "Reading the reply"."""
+def parse_reply(text: str, hit_limit: bool = False, key: str = "cleaned") -> Reply:
+    """Reads the model's raw reply. `hit_limit` is true when generation
+    stopped because it reached max_tokens."""
     if any(tag in text for tag in THINK_TAGS):
         return Reply(None, "think_tags")
     stripped = text.strip()
@@ -85,62 +105,98 @@ def parse_reply(text: str, key: str = "cleaned") -> Reply:
     try:
         value = json.loads(stripped)
     except json.JSONDecodeError:
-        return Reply(None, "cut_off" if stripped.startswith("{") else "malformed")
+        return Reply(None, "cut_off" if hit_limit else "malformed")
     if not isinstance(value, dict) or not isinstance(value.get(key), str):
         return Reply(None, "malformed")
     return Reply(value[key].strip(), None)
 
 
+# ---- Tokens ------------------------------------------------------------------
+
+
 def words(text: str) -> list[str]:
-    """Lowercase words with apostrophes kept; punctuation and symbols split words."""
+    """Lowercase ASCII words; an apostrophe joins a following letter run
+    ("don't"). Everything else (punctuation, symbols, non-ASCII letters)
+    separates words."""
     text = text.lower().replace("’", "'")
     return re.findall(r"[a-z0-9]+(?:'[a-z]+)?", text)
 
 
-def expanded(text: str) -> list[str]:
+def expand(tokens: list[str]) -> list[str]:
     out: list[str] = []
-    for word in words(text):
+    for word in tokens:
         out.extend(CONTRACTIONS.get(word, word).split())
     return out
 
 
-def numbers(text: str) -> list[int]:
-    """Every number written as digits or spelled out (up to millions)."""
+def stem(word: str) -> str:
+    for suffix in STEM_SUFFIXES:
+        if word.endswith(suffix) and len(word) > len(suffix) + 2:
+            return word[: -len(suffix)]
+    return word
+
+
+def strip_fillers(tokens: list[str]) -> list[str]:
+    """Drops leading filler words and two-word fillers ("you know")."""
+    index = 0
+    while index < len(tokens):
+        if tokens[index] in FILLERS:
+            index += 1
+        elif index + 1 < len(tokens) and f"{tokens[index]} {tokens[index + 1]}" in FILLERS:
+            index += 2
+        else:
+            break
+    return tokens[index:]
+
+
+# ---- Numbers -----------------------------------------------------------------
+
+
+def numbers_in(tokens: list[str]) -> list[int]:
+    """Every number written as digits, digits inside a word ("T3"), or spelled
+    out ("one thousand two hundred", "a hundred", "twenty five")."""
     found: list[int] = []
-    tokens = words(text.replace(",", ""))
-    current: int | None = None
-    total = 0
+    total = 0  # completed thousands/millions
+    current: int | None = None  # the part under the current scale
 
     def flush() -> None:
-        nonlocal current, total
-        if current is not None:
-            found.append(total + current)
-        current, total = None, 0
+        nonlocal total, current
+        if current is not None or total:
+            found.append(total + (current or 0))
+        total, current = 0, None
 
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if token.isdigit():
             flush()
             found.append(int(token))
         elif any(c.isdigit() for c in token):
-            # Digits inside a word, like "T3" or "v2": count them too.
             flush()
             found.extend(int(run) for run in re.findall(r"[0-9]+", token))
-        elif token in NUMBER_WORDS:
+        elif token in NUMBER_WORDS and not (token == "oh" and current is None and not total):
             value = NUMBER_WORDS[token]
-            if current is not None and value < 10 and current % 10 == 0 and current >= 20:
+            if current is not None and 20 <= current < 100 and current % 10 == 0 and value < 10:
                 current += value  # "twenty five"
+            elif current is not None and current % 100 == 0 and current >= 100 and value < 100:
+                current += value  # "one hundred five"
+            elif current is None and total and value < 1000:
+                current = value  # "one thousand two …"
             elif current is not None:
                 flush()
                 current = value
             else:
                 current = value
-        elif token in SCALES and current is not None:
-            if SCALES[token] == 100:
-                current *= 100
+        elif token in SCALES:
+            scale = SCALES[token]
+            if current is None and not total and index > 0 and tokens[index - 1] in ("a", "one"):
+                current = 1  # "a hundred"
+            if current is None and not total:
+                continue
+            if scale == 100:
+                current = (current or 1) * 100
             else:
-                total += current * SCALES[token]
-                current = 0
-        elif token == "and" and current is not None:
+                total += (current or 1) * scale
+                current = None
+        elif token == "and" and (current is not None or total):
             continue  # "one hundred and five"
         else:
             flush()
@@ -148,21 +204,72 @@ def numbers(text: str) -> list[int]:
     return found
 
 
-def corrected_spans(text: str) -> set[int]:
-    """Indexes of words the speaker replaced: the word(s) right before a
-    correction marker ("fifteen, no, fifty" marks "fifteen")."""
-    tokens = words(text)
-    marked: set[int] = set()
-    joined = " ".join(tokens)
-    for marker in CORRECTIONS:
-        for match in re.finditer(rf"(?:^| ){re.escape(marker)}(?= |$)", joined):
-            index = joined[: match.start() + 1].count(" ") if match.start() else 0
-            # Up to three words before the marker may be replaced.
-            for back in range(1, 4):
-                if index - back >= 0:
-                    marked.add(index - back)
-    return marked
+def _covered(target: Counter[int], available: list[int]) -> tuple[Counter[int], list[int]]:
+    """Matches each wanted number against `available`, either directly or as
+    the digits of consecutive available numbers joined ("eight zero eight
+    zero" or "eighty eighty" = 8080). Returns (unmatched wanted, leftover available)."""
+    left = list(available)
+    missing: Counter[int] = Counter()
+    for number, count in target.items():
+        for _ in range(count):
+            if number in left:
+                left.remove(number)
+                continue
+            text = str(number)
+            matched = False
+            for start in range(len(left)):
+                joined = ""
+                for end in range(start, min(start + 6, len(left))):
+                    joined += str(left[end])
+                    if joined == text:
+                        del left[start:end + 1]
+                        matched = True
+                        break
+                    if not text.startswith(joined):
+                        break
+                if matched:
+                    break
+            if not matched:
+                missing[number] += 1
+    return missing, left
 
+
+# ---- Corrections -------------------------------------------------------------
+
+
+def _kind(token: str) -> str:
+    if token.isdigit() or token in NUMBER_WORDS:
+        return "number"
+    return "word"
+
+
+def corrected_spans(tokens: list[str]) -> tuple[set[int], set[int]]:
+    """Finds spoken corrections. Returns (replaced word indexes, marker word
+    indexes). A marker counts only when the next word restates something from
+    the three words before it: the same word, or a number after a number.
+    "fifteen seconds no fifty seconds" replaces "fifteen seconds"; "there is
+    no cache" is not a correction."""
+    replaced: set[int] = set()
+    markers: set[int] = set()
+    for index in range(len(tokens)):
+        for marker in CORRECTION_MARKERS:
+            parts = marker.split()
+            if tokens[index:index + len(parts)] != parts:
+                continue
+            before = tokens[max(0, index - 3):index]
+            after = tokens[index + len(parts):index + len(parts) + 4]
+            if not before or not after:
+                continue
+            restated = any(w in before for w in after if w not in FUNCTION_WORDS) or (
+                _kind(after[0]) == "number" and any(_kind(w) == "number" for w in before)
+            )
+            if restated:
+                replaced.update(range(max(0, index - 3), index))
+                markers.update(range(index, index + len(parts)))
+    return replaced, markers
+
+
+# ---- Identifiers -------------------------------------------------------------
 
 IDENTIFIER = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*(?:[._/-][A-Za-z0-9_]+)+"  # dotted, slashed, snake, kebab
@@ -176,72 +283,111 @@ def identifiers(text: str) -> list[str]:
     return [m.group(0) for m in IDENTIFIER.finditer(text)]
 
 
-def _squash(text: str) -> str:
+def squash(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
-def check(transcript: str, cleaned: str, vocabulary: list[str] | tuple[str, ...] = ()) -> list[str]:
-    """Returns the names of the hard checks the cleaned text fails (empty = passes)."""
-    failures: list[str] = []
-    raw_words = words(transcript)
-    out_words = words(cleaned)
+# ---- The checks --------------------------------------------------------------
 
-    # Answered instead of cleaned: starts like a reply, or grew far beyond what was said.
-    lead = cleaned.strip().lower()
-    if any(lead.startswith(opener) for opener in ANSWER_OPENERS) and not any(
-        transcript.strip().lower().startswith(opener) for opener in ANSWER_OPENERS
-    ):
-        failures.append("answers")
-    elif len(out_words) > 1.6 * len(raw_words) + 8:
-        failures.append("answers")
 
-    # Numbers: nothing new, nothing kept by the speaker dropped.
-    raw_numbers = numbers(transcript)
-    out_numbers = numbers(cleaned)
-    if any(n not in raw_numbers for n in out_numbers):
-        failures.append("numbers")
-    else:
-        # Numbers the speaker kept: the transcript without corrected-away words.
-        replaced = corrected_spans(transcript)
-        kept_text = " ".join(w for i, w in enumerate(words(transcript.replace(",", ""))) if i not in replaced)
-        if any(n not in out_numbers for n in set(numbers(kept_text))):
-            failures.append("numbers")
+def check(
+    transcript: str,
+    cleaned: str,
+    vocabulary: list[str] | tuple[str, ...] = (),
+    max_words_ratio: float = 1.6,
+    max_words_slack: int = 8,
+) -> list[str]:
+    """Returns the names of the hard checks the cleaned text fails, in
+    CHECK_ORDER (empty = passes)."""
+    failures: set[str] = set()
+    raw = words(transcript)
+    out = words(cleaned)
+    raw_expanded = expand(raw)
+    out_expanded = expand(out)
+    replaced, markers = corrected_spans(raw)
+    ignored = replaced | markers
 
-    # Negations: the ones the speaker kept, no fewer and no more.
-    replaced = corrected_spans(transcript)
-    raw_negations = [w for i, w in enumerate(raw_words) if w in NEGATIONS and i not in replaced]
-    out_negations = [w for w in out_words if w in NEGATIONS]
-    if len(out_negations) != len(raw_negations):
-        failures.append("negation")
+    # dropped: nothing (or too little) left of what the speaker kept.
+    content = [
+        w for i, w in enumerate(raw)
+        if i not in ignored and w not in FUNCTION_WORDS and w not in FILLERS
+        and _kind(w) != "number" and w not in SCALES  # numbers are checked on their own
+    ]
+    out_stems = {stem(w) for w in out_expanded}
+    if content and not out:
+        failures.add("dropped")
+    elif len(content) >= 4:
+        kept = sum(1 for w in content if stem(w) in out_stems or w in squash(cleaned))
+        if kept / len(content) < 0.5:
+            failures.add("dropped")
 
-    # Identifiers: each one written in the transcript must survive (ignoring case and separators).
-    squashed_out = _squash(cleaned)
-    for identifier in identifiers(transcript):
-        if _squash(identifier) not in squashed_out:
-            failures.append("identifiers")
+    # answers: starts like a reply (not just echoing how the speaker began), or grew too much.
+    lead = strip_fillers(out)
+    raw_lead = strip_fillers(raw)[:4]
+    for opener in ANSWER_OPENERS:
+        opener_words = words(opener)
+        if lead[: len(opener_words)] == opener_words:
+            joined = " ".join(raw_lead)
+            if " ".join(opener_words) not in joined:
+                failures.add("answers")
             break
+    if len(out) > max_words_ratio * len(raw) + max_words_slack:
+        failures.add("answers")
 
-    # New words: anything that isn't in the transcript, the vocabulary, or a
-    # small set of joining words. Numbers are checked above.
-    allowed = set(expanded(transcript)) | FUNCTION_WORDS
-    squashed_raw = _squash(transcript)
+    # question: a spoken question must stay a question.
+    raw_start = strip_fillers(raw)
+    if raw_start and raw_start[0] in QUESTION_STARTS and out and not cleaned.rstrip().endswith("?"):
+        failures.add("question")
+
+    # numbers: nothing new, and every number the speaker kept, as many times.
+    raw_numbers = numbers_in(raw)
+    out_numbers = numbers_in(out)
+    new, _ = _covered(Counter(out_numbers), raw_numbers)
+    kept_numbers = numbers_in([w for i, w in enumerate(raw) if i not in ignored])
+    missing, _ = _covered(Counter(kept_numbers), _expand_for_join(out_numbers))
+    if new or missing:
+        failures.add("numbers")
+
+    # negation: the negations the speaker kept, no fewer and no more.
+    raw_negations = sum(1 for i, w in enumerate(raw) if w in NEGATIONS and i not in ignored)
+    out_negations = sum(1 for w in out if w in NEGATIONS)
+    if raw_negations != out_negations:
+        failures.add("negation")
+
+    # identifiers: each one written in the transcript survives (ignoring case and separators).
+    squashed_out = squash(cleaned)
+    if any(squash(identifier) not in squashed_out for identifier in identifiers(transcript)):
+        failures.add("identifiers")
+
+    # new_words: every word is from the transcript, the vocabulary, a small set of
+    # joining words, or 2–3 consecutive transcript words joined ("read me" → "readme").
+    allowed = set(raw_expanded) | FUNCTION_WORDS
     for term in vocabulary:
         allowed.update(words(term))
-    for word in expanded(cleaned):
-        if word in allowed or word.isdigit() or word in NUMBER_WORDS or word in SCALES:
+    allowed_stems = {stem(a) for a in allowed}
+    joins = {
+        "".join(raw_expanded[i:i + n]) for n in (2, 3) for i in range(len(raw_expanded) - n + 1)
+    }
+    for word in out_expanded:
+        if word in allowed or stem(word) in allowed_stems or word in joins:
             continue
-        if _stem(word) in {_stem(a) for a in allowed}:
-            continue
-        if word in squashed_raw:  # joined spoken parts, e.g. "read me" -> "readme"
-            continue
-        failures.append("new_words")
+        if word.isdigit() or word in NUMBER_WORDS or word in SCALES:
+            continue  # numbers are checked above
+        failures.add("new_words")
         break
 
-    return failures
+    return [name for name in CHECK_ORDER if name in failures]
 
 
-def _stem(word: str) -> str:
-    for suffix in ("ing", "ed", "es", "s"):
-        if word.endswith(suffix) and len(word) > len(suffix) + 2:
-            return word[: -len(suffix)]
-    return word
+def _expand_for_join(out_numbers: list[int]) -> list[int]:
+    """For the "kept" direction a joined output number ("8080") covers
+    several spoken numbers ("eight zero eight zero"): offer its digits as
+    pieces too."""
+    pieces = list(out_numbers)
+    for number in out_numbers:
+        text = str(number)
+        if len(text) > 1:
+            pieces.extend(int(c) for c in text)
+            if len(text) % 2 == 0:
+                pieces.extend(int(text[i:i + 2]) for i in range(0, len(text), 2))
+    return pieces

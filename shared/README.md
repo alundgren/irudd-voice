@@ -1,36 +1,112 @@
 # Shared contracts
 
 Files here are read by both the Swift app and the Python CLI. Change them
-in one place, and bump the version when the meaning changes.
+in one place and bump the version when the meaning changes. Both sides have
+tests that run the fixtures in `fixtures/`.
 
 | File | What | Read by |
 | --- | --- | --- |
-| `cleanup-prompt.json` | The cleanup prompt and generation settings, versioned (`cleanup-v1`) | App (cleanup), CLI (train, eval, label) |
-| `fixtures/hard-checks.json` | Cases every hard-check implementation must agree on | Swift and Python tests |
-| `manifest.schema.md` | The model folder and `manifest.json` format | App, CLI |
-| `vocabulary.schema.md` | The vocabulary file format | App, CLI |
+| `cleanup-prompt.json` | Cleanup prompt, generation and check settings (`cleanup-v1`) | App (cleanup), CLI (train, eval, label) |
+| `fixtures/prompt-building.json` | Exact system and user messages for given inputs | Swift and Python tests |
+| `fixtures/hard-checks.json` | Reply parsing and hard-check results every implementation must match | Swift and Python tests |
+| `manifest.schema.md` | Model folders and `manifest.json` | App, CLI |
+| `vocabulary.schema.md` | `vocabulary.json` | App, CLI |
+| `app-state.md` | Keys the app and CLI use to coordinate through the database | App, CLI |
+
+Reference implementations: `cli/src/irudd_voice/prompt.py` and
+`cli/src/irudd_voice/hardchecks.py`.
 
 ## Building the prompt
 
-1. `input_json` is `{"transcript": "<Apple's text>"}`, serialised with
-   standard JSON escaping. Wrapping the text in JSON makes it read as data,
-   not as a request to the model.
-2. `vocabulary` is `vocabulary_template` with `{terms}` replaced by the
-   vocabulary terms joined with `, `, or an empty string when there are none.
-3. `rule` is repeated last on purpose: small models follow the most recent
-   instruction most strongly.
-4. Messages: `system` = `system`, `user` = the filled `user_template`. The
-   chat template is applied with `chat_template_options` (thinking off).
-5. Decode greedily (`temperature` 0) with `max_tokens`.
+1. **Vocabulary** goes in the system message, so the system message (rules
+   plus vocabulary) stays the same between requests and can be cached. Take
+   the first `vocabulary_limit` terms in file order. If there are any,
+   append `vocabulary_template` with `{terms}` = the terms joined by `", "`.
+   If there are none, append nothing.
+2. **`input_json`** is exactly `{"transcript": ` + string literal + `}`.
+   The string literal escapes only `"` → `\"`, `\` → `\\`, newline → `\n`,
+   carriage return → `\r`, tab → `\t`, backspace → `\b`, form feed → `\f`,
+   and other characters below U+0020 → `\u00XX` (lowercase hex). `/` and
+   non-ASCII characters are written as they are. This is not the default
+   output of Python's `json.dumps` or Swift's `JSONEncoder`; use the
+   hand-written escaper.
+3. **User message** = `user_template` with `{input_json}` and `{rule}`
+   replaced **in a single pass**, so a transcript containing `{rule}` is
+   left alone.
+4. Messages are `[system, user]`. Apply the model's chat template with
+   `add_generation_prompt` true and `chat_template_options` (thinking off).
+5. Decode greedily (`temperature` 0), at most `max_tokens` tokens, and stop
+   at the model's end-of-turn tokens (Gemma lists them in
+   `generation_config.json`).
 
 ## Reading the reply
 
-The reply must be one JSON object with a string `cleaned`. Anything else is
-a failure, and the raw transcript is pasted instead:
+Work through these in order:
 
-- `think_tags`: the reply contains `<think>` or `</think>`.
-- `cut_off`: the reply starts like JSON but doesn't parse (it ran out of tokens).
-- `malformed`: no JSON object with a string `cleaned`.
+1. If the reply contains any of `<think>`, `</think>`, `<|channel>`,
+   `<channel|>`, `<|think|>` → `think_tags`.
+2. Trim whitespace. If the whole reply is a ``` fence (optionally
+   ```` ```json ````), take what's inside it, trimmed.
+3. If that doesn't parse as JSON: `cut_off` when generation stopped at
+   `max_tokens`, otherwise `malformed`. Trailing text after the object
+   doesn't parse, so it's `malformed`.
+4. If it isn't an object with a string under `output_key` → `malformed`.
+5. Otherwise the cleaned text is that string, trimmed.
 
-Then the hard checks run on (`transcript`, `cleaned`, vocabulary). See
-`fixtures/hard-checks.json` and `cli/src/irudd_voice/hardchecks.py`.
+Any failure means the raw transcript is pasted instead.
+
+## Hard checks
+
+`check(transcript, cleaned, vocabulary)` returns the failing check names,
+in this order: `dropped`, `answers`, `question`, `numbers`, `negation`,
+`identifiers`, `new_words`. Use the same `vocabulary` terms as the prompt
+(the first `vocabulary_limit`).
+
+**Words.** Lowercase, map `’` to `'`, then take the matches of
+`[a-z0-9]+(?:'[a-z]+)?`. Everything else separates words, including
+non-ASCII letters. *Expanded words* replace contractions with their long
+form (table `CONTRACTIONS`). The *stem* of a word removes the first
+matching suffix of `ing`, `ed`, `es`, `s` when the word is more than two
+letters longer than the suffix.
+
+**Corrections.** At each position where a correction marker starts
+(`no`, `sorry`, `i mean`, `scratch that`, `not that`, `make that`,
+`or rather`), take up to 3 words *before* and up to 4 words *after* it. It's a
+correction only if some word after it (that isn't a joining word) also
+appears before it, or the first word after it is a number and a number
+appears before it. If it is, the words before are *replaced* and the marker
+words are *markers*. Both are *ignored* below.
+
+**Numbers.** Digits, digits inside a word (`T3` → 3), and spelled-out
+numbers. Spelled-out numbers include tens plus units (`twenty five`),
+hundreds (`one hundred and five`), `a hundred`, and thousands and millions
+that keep collecting smaller parts (`one thousand two hundred` → 1200). A
+standalone `oh` is not zero. An output number may also equal the digits of
+up to 6 consecutive transcript numbers joined (`eight zero eight zero` or
+`eighty eighty` → 8080, `twenty twenty six` → 2026).
+
+The checks:
+
+- `dropped`: the transcript has content words (not ignored, not joining
+  words, not fillers, not numbers) and the output has no words. Or there
+  are at least 4 content words and fewer than half appear in the output
+  (by stem, or inside the output with separators removed).
+- `answers`: after removing leading fillers, the output starts with an
+  answer opener (`ANSWER_OPENERS`) that isn't among the transcript's first 4
+  words after its own fillers. Or the output has more than
+  `max_output_words_ratio` × transcript words + `max_output_words_slack` words.
+- `question`: after fillers, the transcript starts with a question word
+  (`QUESTION_STARTS`; not `do` or `will`) and the output doesn't end with `?`.
+- `numbers`: the output has a number the transcript can't account for, or
+  a number the speaker kept (not ignored) is missing, counting repeats.
+- `negation`: the number of negation words (`NEGATIONS`, including `no`)
+  differs between the output and the transcript's non-ignored words.
+- `identifiers`: an identifier written in the transcript (dotted, slashed,
+  snake, kebab, camelCase, PascalCase with a hump, letters followed by
+  digits) doesn't appear in the output after lowercasing and removing
+  everything but letters and digits.
+- `new_words`: an expanded output word isn't a transcript word, a
+  vocabulary word, a joining word, the same stem as one of those, 2–3
+  consecutive transcript words joined (`read me` → `readme`), or a number.
+
+The word lists are in `hardchecks.py`; copy them exactly.
