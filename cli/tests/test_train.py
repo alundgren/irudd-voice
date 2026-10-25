@@ -97,3 +97,34 @@ def test_tiny_lora_end_to_end(tmp_path):
     assert manifest["training"]["method"] == "lora" and manifest["training"]["iterations"] == 4
     gen = Model(result.folder).clean("um can you explain why the tests failed")
     assert hardchecks.parse_reply(gen.text, gen.hit_limit).cleaned is not None
+
+
+def test_train_dataset_uses_the_dataset_hash(tmp_path, monkeypatch):
+    (tmp_path / "dataset.json").write_text(json.dumps({
+        "dataset_hash": "abc", "prompt_version": prompt.load()["version"],
+        "examples": {"train": 12, "selection": 2, "test": 3}, "augmented": {"train": 4}}))
+    seen = {}
+    monkeypatch.setattr(train, "train", lambda *args, **kwargs: seen.update(args=args, kwargs=kwargs))
+    train.train_dataset(models.candidate("qwen3.5-2b"), tmp_path, "qwen3.5-2b-ft-1", models_dir=tmp_path)
+    assert seen["args"][1:] == (tmp_path / "train.jsonl", tmp_path / "valid.jsonl", "qwen3.5-2b-ft-1")
+    assert seen["kwargs"]["dataset_hash"] == "abc" and seen["kwargs"]["chunks"] == 8
+
+
+def test_train_dataset_refuses_another_prompt_version(tmp_path):
+    (tmp_path / "dataset.json").write_text(json.dumps({"dataset_hash": "abc", "prompt_version": "cleanup-v0",
+                                                       "examples": {"train": 1}}))
+    with pytest.raises(models.ModelError, match="cleanup-v0"):
+        train.train_dataset(models.candidate("qwen3.5-2b"), tmp_path, "x", models_dir=tmp_path)
+    with pytest.raises(models.ModelError, match="no dataset.json"):
+        train.train_dataset(models.candidate("qwen3.5-2b"), tmp_path / "nope", "x", models_dir=tmp_path)
+
+
+def test_dataset_examples_use_the_training_builder():
+    from irudd_voice import dataset
+
+    assert json.loads(dataset.example("um hi", "Hi.", ["SQLite"])) == train.example("um hi", "Hi.", ["SQLite"])
+
+
+def test_bf16_estimate_counts_embeddings_once():
+    # qwen3.5-2b: 3.76 GB of text weights, 1.02 GB of them embeddings; measured peak 6.7 GB.
+    assert train.bf16_training_bytes(376, 102) == 650

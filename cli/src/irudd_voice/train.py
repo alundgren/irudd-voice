@@ -58,11 +58,13 @@ LORA_KEYS = {
     ),
 }
 
-# Training on bf16 weights needs about this many times their size (weights,
-# LoRA state, activations with checkpointing). Above the budget, train on the
+# Training on bf16 weights needs the text weights themselves plus about as
+# much again for the transformer layers (activations, LoRA and optimizer
+# state with checkpointing). Embedding tables only sit in memory, so they
+# count once: Gemma's per-layer embeddings are 5.5 of its 9.3 GB. Measured on
+# qwen3.5-2b: estimate 6.5 GB, peak 6.7 GB. Above the budget, train on the
 # 4-bit folder instead (QLoRA).
-BF16_MEMORY_FACTOR = 1.6
-MEMORY_BUDGET_FRACTION = 0.5
+MEMORY_BUDGET_FRACTION = 0.6
 
 
 @dataclass
@@ -108,7 +110,7 @@ def write_jsonl(rows: list[dict], path: Path) -> None:
     path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
 
 
-def dataset_hash(*paths: Path) -> str:
+def files_hash(*paths: Path) -> str:
     digest = hashlib.sha256()
     for path in paths:
         digest.update(path.name.encode() + b"\0" + path.read_bytes() + b"\0")
@@ -136,8 +138,19 @@ def tokenize(tokenizer, row: dict, chat_template_options: dict) -> tuple[list[in
     return prompt_ids + reply_ids, len(prompt_ids)
 
 
-def weights_bytes(folder: Path) -> int:
-    return sum(p.stat().st_size for p in folder.glob("*.safetensors"))
+def text_weight_bytes(folder: Path) -> tuple[int, int]:
+    """(all, embedding) bytes of the weights mlx-lm keeps for the text model.
+    Loads lazily, so nothing is read; vision and audio towers are dropped."""
+    from mlx.utils import tree_flatten
+    from mlx_lm.utils import load_model
+
+    model, _ = load_model(folder, lazy=True)
+    params = tree_flatten(model.parameters())
+    return sum(v.nbytes for _, v in params), sum(v.nbytes for k, v in params if "embed" in k)
+
+
+def bf16_training_bytes(total: int, embeddings: int) -> int:
+    return total + (total - embeddings)
 
 
 def physical_memory() -> int:
@@ -150,7 +163,7 @@ def choose_base(cand: Candidate, models_dir: Path) -> tuple[Path, str]:
     """The weights to train on: the bf16 snapshot when it fits in memory,
     otherwise the prepared 4-bit folder."""
     source = snapshot(cand)
-    if weights_bytes(source) * BF16_MEMORY_FACTOR <= physical_memory() * MEMORY_BUDGET_FRACTION:
+    if bf16_training_bytes(*text_weight_bytes(source)) <= physical_memory() * MEMORY_BUDGET_FRACTION:
         return source, "bf16"
     q4 = models_dir / cand.base_id
     if not q4.exists():
@@ -234,10 +247,14 @@ def train(
     models_dir: Path = DEFAULT_MODELS_DIR,
     settings: LoraSettings | None = None,
     chunks: int | None = None,
+    dataset_hash: str | None = None,
     extra_training: dict | None = None,
     log=print,
 ) -> TrainResult:
-    """Dataset files in → `<models_dir>/<model_id>/` with a `training` block."""
+    """Dataset files in → `<models_dir>/<model_id>/` with a `training` block.
+    `dataset_hash` should come from the dataset's own summary (train_dataset
+    does this) so reports and promotion compare the same value; without it
+    the files are hashed."""
     try:
         from mlx_lm.utils import load
     except ImportError as error:
@@ -268,7 +285,7 @@ def train(
             timings["fuse_seconds"] = round(time.perf_counter() - started, 1)
             training = {
                 "method": "lora",
-                "dataset_hash": dataset_hash(train_path, valid_path),
+                "dataset_hash": dataset_hash or files_hash(train_path, valid_path),
                 "chunks": chunks if chunks is not None else len(train_rows),
                 "layers": settings.layers,
                 "iterations": settings.iterations,
@@ -319,6 +336,25 @@ TINY_REQUESTS = (
     ("open the settings file and remove the unused keys", "Open the settings file and remove the unused keys."),
 )
 TINY_FILLERS = ("", "um ", "so ", "uh ", "okay so ", "um so basically ", "yeah ", "so like ")
+
+
+def train_dataset(cand: Candidate, data: Path, model_id: str, *, models_dir: Path = DEFAULT_MODELS_DIR,
+                  settings: LoraSettings | None = None, log=print) -> TrainResult:
+    """Trains on a `dataset build` folder: train.jsonl, valid.jsonl (the
+    selection split) and dataset.json, whose dataset_hash goes in the model's
+    training block unchanged."""
+    summary_path = data / "dataset.json"
+    if not summary_path.exists():
+        raise ModelError(f"{data} has no dataset.json; build it with: irudd-voice dataset build --out {data}")
+    summary = json.loads(summary_path.read_text())
+    prompt_version = cleanup_prompt.load()["version"]
+    if summary.get("prompt_version") != prompt_version:
+        raise ModelError(f"the dataset was built for prompt {summary.get('prompt_version')}, not {prompt_version}; "
+                         "build it again")
+    examples, augmented = summary["examples"], summary.get("augmented", {})
+    return train(cand, data / "train.jsonl", data / "valid.jsonl", model_id, models_dir=models_dir,
+                 settings=settings, chunks=examples["train"] - augmented.get("train", 0),
+                 dataset_hash=summary["dataset_hash"], log=log)
 
 
 def tiny_examples(seed: int = 0) -> list[dict]:

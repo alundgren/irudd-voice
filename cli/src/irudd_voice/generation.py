@@ -6,7 +6,9 @@ Swift parity check come from the same code that eval scores.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,6 +95,33 @@ def stop_token_ids(tokenizer) -> set[int]:
     vocab = tokenizer.get_vocab()
     ids.update(vocab[t] for t in END_OF_TURN_TOKENS if t in vocab)
     return ids
+
+
+def contract_hashes() -> dict:
+    """Binds a report to the prompt and hard checks it was made with:
+    prompt_sha256 = SHA-256 of shared/cleanup-prompt.json, hardchecks_sha256 =
+    SHA-256 of hardchecks.py's bytes followed by fixtures/hard-checks.json's."""
+    shared = cleanup_prompt.SHARED
+    checks = hashlib.sha256((Path(__file__).parent / "hardchecks.py").read_bytes())
+    checks.update((shared / "fixtures" / "hard-checks.json").read_bytes())
+    return {
+        "prompt_sha256": hashlib.sha256((shared / "cleanup-prompt.json").read_bytes()).hexdigest(),
+        "hardchecks_sha256": checks.hexdigest(),
+    }
+
+
+def hardware() -> str:
+    """Model identifier, chip and memory, e.g. "Mac17,4 Apple M5 24 GB"."""
+    def sysctl(name: str) -> str:
+        try:
+            return subprocess.run(["sysctl", "-n", name], capture_output=True, text=True, check=True).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            return ""
+
+    memory = sysctl("hw.memsize")
+    parts = [sysctl("hw.model"), sysctl("machdep.cpu.brand_string"),
+             f"{int(memory) // 2**30} GB" if memory.isdigit() else ""]
+    return " ".join(p for p in parts if p) or "unknown"
 
 
 def read_jsonl(path: Path) -> list[dict]:

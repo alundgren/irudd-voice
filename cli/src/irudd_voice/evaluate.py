@@ -22,7 +22,6 @@ from .models import utc_now
 
 EVALS = Path(__file__).resolve().parents[3] / "evals"
 SETS = ("questions", "transcripts")
-HARDWARE = "MacBook Air M5 24 GB"
 
 
 @dataclass
@@ -140,7 +139,7 @@ def run(generate: Generator, sets: list[str], prompt: dict | None = None, log=pr
 def evaluate_folder(folder: Path, sets: list[str], log=print) -> dict:
     from importlib.metadata import version
 
-    from .generation import Model
+    from .generation import Model, contract_hashes, hardware
 
     model = Model(folder)
     model.clean("warm up")  # the first call compiles kernels; keep it out of the timings
@@ -153,7 +152,8 @@ def evaluate_folder(folder: Path, sets: list[str], log=print) -> dict:
     return {
         "model_id": model.manifest["id"],
         "manifest_sha256": hashlib.sha256((folder / "manifest.json").read_bytes()).hexdigest(),
-        "hardware": HARDWARE,
+        **contract_hashes(),
+        "hardware": hardware(),
         "mlx_version": version("mlx"),
         "mlx_lm_version": version("mlx-lm"),
         "created_at": utc_now(),

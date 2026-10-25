@@ -12,7 +12,7 @@ import json
 from importlib.metadata import version
 from pathlib import Path
 
-from .generation import Model, read_jsonl
+from .generation import Model, contract_hashes, read_jsonl
 
 FORMAT = 1
 MAX_NEW_TOKENS = 96
@@ -43,6 +43,7 @@ def reference(folder: Path, inputs: Path = DEFAULT_INPUTS, max_new_tokens: int =
         "model_id": model.manifest["id"],
         "manifest_sha256": hashlib.sha256((folder / "manifest.json").read_bytes()).hexdigest(),
         "prompt_version": model.prompt["version"],
+        **contract_hashes(),
         "inputs_sha256": hashlib.sha256(inputs.read_bytes()).hexdigest(),
         "chat_template_options": model.prompt["chat_template_options"],
         "max_new_tokens": max_new_tokens,

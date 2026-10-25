@@ -127,3 +127,60 @@ def test_model_commands_explain_the_ml_group(tmp_path, monkeypatch, capsys):
     assert cli.main(["models", "prepare", "qwen3.5-2b", "--models-dir", str(tmp_path)]) == 1
     assert "uv run --group ml" in capsys.readouterr().err
     assert not any(tmp_path.iterdir())
+
+
+def prepared(models_dir, cand_id="qwen3.5-2b"):
+    cand = models.candidate(cand_id)
+    models_dir.mkdir(exist_ok=True)
+    folder = fake_folder(models_dir / cand.base_id)
+    return folder, models.write_manifest(folder, folder.name, cand)
+
+
+def model_rows(path):
+    return sqlite3.connect(path).execute("SELECT id FROM models").fetchall()
+
+
+def test_prepare_records_into_the_apps_database_by_default(tmp_path, app_db, monkeypatch, capsys):
+    from irudd_voice import db
+
+    monkeypatch.setattr(db, "DEFAULT_PATH", app_db)
+    folder, _ = prepared(tmp_path / "models")
+    # Already prepared: no MLX needed, but the row is still recorded.
+    assert cli.main(["models", "prepare", "qwen3.5-2b", "--models-dir", str(tmp_path / "models")]) == 0
+    assert model_rows(app_db) == [(folder.name,)]
+    assert f"recorded {folder.name}" in capsys.readouterr().err
+
+
+def test_prepare_skips_recording_without_an_app_database(tmp_path, capsys):
+    prepared(tmp_path / "models")
+    assert cli.main(["models", "prepare", "qwen3.5-2b", "--models-dir", str(tmp_path / "models")]) == 0
+    assert "No database" in capsys.readouterr().err
+
+
+def test_db_option_overrides_and_must_exist(tmp_path, app_db, capsys):
+    folder, _ = prepared(tmp_path / "models")
+    args = ["models", "prepare", "qwen3.5-2b", "--models-dir", str(tmp_path / "models")]
+    assert cli.main([*args, "--db", str(app_db)]) == 0
+    assert model_rows(app_db) == [(folder.name,)]
+    assert cli.main([*args, "--db", str(tmp_path / "missing.sqlite")]) == 1
+    assert "No database" in capsys.readouterr().err
+
+
+def test_prepare_wont_reuse_a_folder_from_another_base(tmp_path, capsys):
+    folder = fake_folder(tmp_path / "qwen3.5-2b-base-q4")
+    models.write_manifest(folder, folder.name, models.candidate("qwen3.5-4b"))
+    assert cli.main(["models", "prepare", "qwen3.5-2b", "--models-dir", str(tmp_path)]) == 1
+    assert "Qwen/Qwen3.5-4B" in capsys.readouterr().err
+
+
+def test_register_records_only_verified_folders(tmp_path, app_db, capsys):
+    folder, _ = prepared(tmp_path)
+    assert cli.main(["models", "register", str(folder), "--db", str(app_db)]) == 0
+    assert model_rows(app_db) == [(folder.name,)]
+    (folder / "config.json").write_text("{}")
+    other = sqlite3.connect(app_db)
+    other.execute("DELETE FROM models")
+    other.commit()
+    assert cli.main(["models", "register", str(folder), "--db", str(app_db)]) == 1
+    assert "doesn't verify" in capsys.readouterr().err
+    assert model_rows(app_db) == []

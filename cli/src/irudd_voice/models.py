@@ -213,10 +213,15 @@ def prepare(cand: Candidate, models_dir: Path = DEFAULT_MODELS_DIR, *, force: bo
     target = models_dir / cand.base_id
     if target.exists() and not force:
         problems = verify(target)
+        if not problems:
+            manifest = read_manifest(target)
+            built_from = (manifest.get("base_repo"), manifest.get("base_revision"), manifest.get("family"))
+            if built_from != (cand.repo, cand.revision, cand.family):
+                problems = [f"it was built from {built_from[0]}@{built_from[1]}, not {cand.repo}@{cand.revision}"]
         if problems:
-            raise ModelError(f"{target} exists but doesn't verify ({problems[0]}); run again with --force")
+            raise ModelError(f"{target} exists but can't be reused ({problems[0]}); run again with --force")
         log(f"{target} is already prepared and verifies")
-        return target, read_manifest(target)
+        return target, manifest
     try:
         from mlx_lm import convert
     except ImportError as error:

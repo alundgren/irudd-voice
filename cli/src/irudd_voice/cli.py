@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from statistics import median
 
-from . import dataset, db, label, vocab
+from . import dataset, db, label, model_commands, vocab
 
 
 def stats(con, path: Path) -> dict:
@@ -87,128 +87,23 @@ def print_stats(s: dict) -> None:
         print(f"Last:      {s['last_thought']['ended_at']}  {text}")
 
 
-def models_command(args) -> int:
-    from . import models
-
-    if args.models_command == "verify":
-        problems = models.verify(args.dir)
-        for problem in problems:
-            print(f"{args.dir.name}: {problem}", file=sys.stderr)
-        if not problems:
-            print(f"{args.dir.name}: manifest and checksums OK")
-        return 1 if problems else 0
-    cand = models.candidate(args.candidate)
-    folder, manifest = models.prepare(cand, args.models_dir, force=args.force)
-    if args.db:
-        models.record(args.db, manifest)
-        print(f"recorded {manifest['id']} in {args.db}")
-    print(folder)
-    return 0
-
-
-def add_ml_commands(commands) -> None:
-    from .models import DEFAULT_MODELS_DIR
-
-    models_parser = commands.add_parser("models", help="prepare and check model folders (needs --group ml)")
-    models_commands = models_parser.add_subparsers(dest="models_command", required=True)
-    prepare = models_commands.add_parser("prepare", help="convert a pinned base model to a 4-bit model folder")
-    prepare.add_argument("candidate", help="qwen3.5-2b, gemma-4-e2b or qwen3.5-4b")
-    prepare.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR,
-                         help="where model folders go (default: the app's)")
-    prepare.add_argument("--db", type=Path, default=argparse.SUPPRESS,
-                         help="also insert or update the model's row in this database")
-    prepare.add_argument("--force", action="store_true", help="rebuild even if the folder is already there")
-    verify = models_commands.add_parser("verify", help="check a model folder's manifest and checksums")
-    verify.add_argument("dir", type=Path)
-
-    train = commands.add_parser("train", help="fine-tune a candidate with LoRA (needs --group ml)")
-    train.add_argument("candidate", help="qwen3.5-2b, gemma-4-e2b or qwen3.5-4b")
-    train.add_argument("--tiny", action="store_true",
-                       help="40 synthetic examples, to check the training round trip")
-    train.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR,
-                       help="where model folders go (default: the app's)")
-
-    evaluate = commands.add_parser("eval", help="run a model over the fixed eval sets (needs --group ml)")
-    evaluate.add_argument("dir", type=Path, help="model folder")
-    evaluate.add_argument("--set", choices=("questions", "transcripts", "all"), default="all")
-    evaluate.add_argument("--out", type=Path, help="write the full JSON report here (default: print it)")
-
-    from .parity import DEFAULT_INPUTS
-
-    parity = commands.add_parser("parity-reference", help="greedy token IDs for the Swift parity check (needs --group ml)")
-    parity.add_argument("dir", type=Path, help="model folder")
-    parity.add_argument("--out", type=Path, required=True, help="JSON file to write")
-    parity.add_argument("--inputs", type=Path, default=DEFAULT_INPUTS, help="inputs (default: evals/parity.jsonl)")
-
-
-def parity_command(args) -> int:
-    from . import parity
-
-    result = parity.reference(args.dir, args.inputs, log=lambda line: print(line, file=sys.stderr))
-    parity.write(result, args.out)
-    print(args.out)
-    return 0
-
-
-def train_command(args) -> int:
-    from . import models, train
-
-    if not args.tiny:
-        print("irudd-voice: only `train --tiny <candidate>` exists so far; training on labeled thoughts comes "
-              "with the dataset tools", file=sys.stderr)
-        return 2
-    result = train.train_tiny(models.candidate(args.candidate), args.models_dir)
-    print(json.dumps({"folder": str(result.folder), "timings": result.timings,
-                      "training": result.manifest["training"]}, indent=2))
-    return 0
-
-
-def eval_command(args) -> int:
-    from . import evaluate
-
-    sets = list(evaluate.SETS) if args.set == "all" else [args.set]
-    report = evaluate.evaluate_folder(args.dir, sets, log=lambda line: print(line, file=sys.stderr))
-    text = json.dumps(report, indent=1, ensure_ascii=False) + "\n"
-    if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(text)
-    summary = {name: s["summary"] for name, s in report["sets"].items()}
-    print(json.dumps({"model_id": report["model_id"], "summary": summary,
-                      "hard_check_gate": report["hard_check_gate"]}, indent=2) if args.out else text, end="\n")
-    return 0
-
-
-ML_COMMANDS = {"eval": eval_command, "train": train_command, "models": models_command, "parity-reference": parity_command}
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="irudd-voice", description=__doc__)
-    parser.add_argument("--db", type=Path, default=None, help="database file (default: the app's)")
+    parser.add_argument("--db", type=Path, default=db.DEFAULT_PATH, help="database file (default: the app's)")
     commands = parser.add_subparsers(dest="command", required=True)
     stats_parser = commands.add_parser("stats", help="what's been recorded so far")
     stats_parser.add_argument("--json", action="store_true", help="print JSON")
     events_parser = commands.add_parser("events", help="the app's recent log lines")
     events_parser.add_argument("-n", type=int, default=40, help="how many (default 40)")
-    add_ml_commands(commands)
     # Commands in their own modules open the database themselves.
-    for module in (label, vocab, dataset):
+    for module in (label, vocab, dataset, model_commands):
         module.register(commands)
     args = parser.parse_args(argv)
     if hasattr(args, "run"):
         return args.run(args)
 
-    if args.command in ML_COMMANDS:
-        from .models import ModelError
-
-        try:
-            return ML_COMMANDS[args.command](args)
-        except (ModelError, db.SchemaError) as error:
-            print(f"irudd-voice: {error}", file=sys.stderr)
-            return 1
-
-    path = args.db or db.DEFAULT_PATH
     try:
-        con = db.connect(path)
+        con = db.connect(args.db)
     except db.SchemaError as error:
         print(f"irudd-voice: {error}", file=sys.stderr)
         return 1
@@ -222,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
                 chunk = f" #{chunk_id}" if chunk_id else ""
                 print(f"{at}  {level:<7} {category:<8}{chunk}  {message}")
         elif args.command == "stats":
-            result = stats(con, path)
+            result = stats(con, args.db)
             if args.json:
                 print(json.dumps(result, indent=2))
             else:

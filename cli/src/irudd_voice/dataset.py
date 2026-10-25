@@ -26,7 +26,7 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import db, hardchecks, prompt, vocab
+from . import db, hardchecks, prompt, train, vocab
 
 VERSION = 1
 TEST_SHARE = (0.10, 0.15, 0.20)  # minimum, target, maximum
@@ -71,13 +71,10 @@ def assign(existing: dict[str, str], days: list[str]) -> dict[str, str]:
     return new
 
 
-def assistant_reply(label: str) -> str:
-    return '{"cleaned": ' + prompt.json_string(label) + "}"
-
-
 def example(transcript: str, label: str, terms: list[str]) -> str:
-    messages = prompt.messages(transcript, terms) + [{"role": "assistant", "content": assistant_reply(label)}]
-    return json.dumps({"messages": messages}, ensure_ascii=False)
+    # One builder for training examples: the tiny run and real datasets
+    # must format replies identically.
+    return json.dumps(train.example(transcript, label, terms), ensure_ascii=False)
 
 
 def spoken_form(label: str, seed: int) -> str:

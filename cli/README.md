@@ -21,6 +21,7 @@ The model commands need MLX, which lives in the `ml` dependency group so
 cd cli
 uv run --group ml irudd-voice models prepare qwen3.5-2b   # pinned HF snapshot → 4-bit model folder
 uv run irudd-voice models verify ~/Library/Application\ Support/irudd-voice/models/qwen3.5-2b-base-q4
+uv run irudd-voice models register <model-folder>            # record an existing folder in the models table
 uv run --group ml irudd-voice train --tiny qwen3.5-2b      # 40 synthetic examples, checks the training round trip
 uv run --group ml irudd-voice eval <model-folder> --set all --out report.json
 uv run --group ml irudd-voice parity-reference <model-folder> --out tokens.json
@@ -29,10 +30,16 @@ uv run --group ml irudd-voice parity-reference <model-folder> --out tokens.json
 - `models prepare <candidate>` downloads the pinned snapshot if it isn't in
   the Hugging Face cache, converts it with mlx-lm (text only, 4-bit, group
   64) into `<models-dir>/<candidate>-base-q4/` and writes `manifest.json`
-  (shared/manifest.schema.md). `--db PATH` also records the folder in the
-  `models` table. Candidates: `qwen3.5-2b`, `gemma-4-e2b`, `qwen3.5-4b`.
+  (shared/manifest.schema.md). An existing folder is reused if it verifies
+  and was built from the same pinned snapshot. Candidates: `qwen3.5-2b`,
+  `gemma-4-e2b`, `qwen3.5-4b`.
+- `models prepare` and `train` record the folder in the `models` table of
+  the app's database (if the app has created it; otherwise they say so and
+  skip it). `--db PATH` uses another database. `models register <folder>`
+  verifies a folder and records it.
 - `train --tiny` trains LoRA on the bf16 weights (the 4-bit folder if bf16
-  wouldn't fit in memory), fuses, quantizes and writes
+  wouldn't fit in 60% of memory: text weights plus the non-embedding weights
+  again), fuses, quantizes and writes
   `<candidate>-tiny-<date>/` with a `training` block in its manifest.
 - `eval` runs the fixed sets in `evals/` through the shared prompt, the
   reply parser and the hard checks, and scores transcripts against their
