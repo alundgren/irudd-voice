@@ -60,12 +60,16 @@ public struct LoadRequest: Codable, Equatable, Sendable {
 }
 
 public struct LoadResponse: Codable, Equatable, Sendable {
+    /// The helper's state after this request.
     public var status: CleanupStatus
     public var loadSeconds: Double?
+    /// Why this load didn't happen, including "a newer load or unload replaced it".
+    public var error: String?
 
-    public init(status: CleanupStatus, loadSeconds: Double? = nil) {
+    public init(status: CleanupStatus, loadSeconds: Double? = nil, error: String? = nil) {
         self.status = status
         self.loadSeconds = loadSeconds
+        self.error = error
     }
 }
 
@@ -73,10 +77,15 @@ public struct CleanRequest: Codable, Equatable, Sendable {
     public var transcript: String
     /// Vocabulary terms in file order; the helper uses the first `vocabulary_limit`.
     public var vocabulary: [String]
+    /// How long the helper may spend, counted from when it receives the
+    /// request (waiting for an earlier cleanup counts). Default: the prompt's
+    /// `generation.timeout_seconds`.
+    public var deadlineSeconds: Double?
 
-    public init(transcript: String, vocabulary: [String] = []) {
+    public init(transcript: String, vocabulary: [String] = [], deadlineSeconds: Double? = nil) {
         self.transcript = transcript
         self.vocabulary = vocabulary
+        self.deadlineSeconds = deadlineSeconds
     }
 }
 
@@ -86,16 +95,19 @@ public struct CleanResponse: Codable, Equatable, Sendable {
     public var reply: String?
     /// Generation stopped at `max_tokens` rather than an end-of-turn token.
     public var hitLimit: Bool
+    /// Generation stopped at the deadline; `reply` is unfinished. Paste raw.
+    public var timedOut: Bool
     public var promptTokens: Int
     public var generatedTokens: Int
     public var promptSeconds: Double
     public var generateSeconds: Double
     public var error: String?
 
-    public init(reply: String?, hitLimit: Bool = false, promptTokens: Int = 0, generatedTokens: Int = 0,
-                promptSeconds: Double = 0, generateSeconds: Double = 0, error: String? = nil) {
+    public init(reply: String?, hitLimit: Bool = false, timedOut: Bool = false, promptTokens: Int = 0,
+                generatedTokens: Int = 0, promptSeconds: Double = 0, generateSeconds: Double = 0, error: String? = nil) {
         self.reply = reply
         self.hitLimit = hitLimit
+        self.timedOut = timedOut
         self.promptTokens = promptTokens
         self.generatedTokens = generatedTokens
         self.promptSeconds = promptSeconds
@@ -106,12 +118,16 @@ public struct CleanResponse: Codable, Equatable, Sendable {
 
 public enum CleanupClientError: Error, Equatable, LocalizedError {
     case timedOut
+    /// The helper process stopped (crashed or was killed) during the call.
+    /// It starts again, empty, on the next call: load the model again.
+    case interrupted
     case connection(String)
     case badReply
 
     public var errorDescription: String? {
         switch self {
         case .timedOut: "The cleanup helper didn't answer in time."
+        case .interrupted: "The cleanup helper stopped; it needs the model loaded again."
         case .connection(let message): "Lost the cleanup helper: \(message)"
         case .badReply: "The cleanup helper sent a reply that couldn't be read."
         }
@@ -119,31 +135,52 @@ public enum CleanupClientError: Error, Equatable, LocalizedError {
 }
 
 /// Talks to the cleanup helper. Every call has a timeout; a crashed or
-/// interrupted helper is an error, never a hang. After an interruption the
-/// next call relaunches the helper, which starts empty, so callers check
-/// `status()` and load again.
+/// interrupted helper is an error, never a hang.
+///
+/// - Interrupted (the helper process died): the call fails with
+///   `.interrupted`, `onInterruption` runs, and the next call starts the
+///   helper again, empty, so the app loads the model again.
+/// - Invalidated (the connection can't be used any more): the next call
+///   opens a new connection.
 public final class CleanupClient: @unchecked Sendable {
-    private let connection: NSXPCConnection
+    /// How much longer than the helper's deadline `clean` waits for an answer.
+    public static let cleanTimeoutMargin: Duration = .seconds(1)
+    /// The deadline `clean` assumes when the request has none
+    /// (shared/cleanup-prompt.json `generation.timeout_seconds`).
+    public static let defaultCleanDeadlineSeconds = 5.0
+
+    private let makeConnection: @Sendable () -> NSXPCConnection
+    private let lock = NSLock()
+    private var connection: NSXPCConnection?
+    private var interruptionHandler: (@Sendable () -> Void)?
+    private var interruptionCount = 0
 
     /// The helper embedded in the app.
     public convenience init() {
-        self.init(connection: NSXPCConnection(serviceName: cleanupServiceName))
+        self.init { NSXPCConnection(serviceName: cleanupServiceName) }
     }
 
     /// A helper behind a listener endpoint (tests use an anonymous listener).
     public convenience init(endpoint: NSXPCListenerEndpoint) {
-        self.init(connection: NSXPCConnection(listenerEndpoint: endpoint))
+        self.init { NSXPCConnection(listenerEndpoint: endpoint) }
     }
 
-    init(connection: NSXPCConnection) {
-        self.connection = connection
-        connection.remoteObjectInterface = CleanupInterface.make()
-        connection.resume()
+    init(makeConnection: @escaping @Sendable () -> NSXPCConnection) {
+        self.makeConnection = makeConnection
     }
 
     deinit {
-        connection.invalidate()
+        connection?.invalidate()
     }
+
+    /// Runs when the helper process stops during a session.
+    public var onInterruption: (@Sendable () -> Void)? {
+        get { lock.withLock { interruptionHandler } }
+        set { lock.withLock { interruptionHandler = newValue } }
+    }
+
+    /// How many times the helper process stopped during a session.
+    public var interruptions: Int { lock.withLock { interruptionCount } }
 
     public func status(timeout: Duration = .seconds(2)) async throws -> CleanupStatus {
         try await call(timeout: timeout) { service, reply in service.status(reply: reply) }
@@ -154,13 +191,45 @@ public final class CleanupClient: @unchecked Sendable {
         return try await call(timeout: timeout) { service, reply in service.load(data, reply: reply) }
     }
 
-    public func clean(_ request: CleanRequest, timeout: Duration = .seconds(5)) async throws -> CleanResponse {
+    /// Cleans one transcript. Waits `cleanTimeoutMargin` past the request's
+    /// deadline unless `timeout` says otherwise; the helper itself stops at
+    /// the deadline, so a late cleanup doesn't hold up the next one.
+    public func clean(_ request: CleanRequest, timeout: Duration? = nil) async throws -> CleanResponse {
         let data = try JSONEncoder().encode(request)
-        return try await call(timeout: timeout) { service, reply in service.clean(data, reply: reply) }
+        let wait = timeout ?? .seconds(request.deadlineSeconds ?? Self.defaultCleanDeadlineSeconds) + Self.cleanTimeoutMargin
+        return try await call(timeout: wait) { service, reply in service.clean(data, reply: reply) }
     }
 
     public func unload(timeout: Duration = .seconds(5)) async throws -> CleanupStatus {
         try await call(timeout: timeout) { service, reply in service.unload(reply: reply) }
+    }
+
+    /// The open connection, or a new one after the last was invalidated.
+    private func activeConnection() -> NSXPCConnection {
+        lock.withLock {
+            if let connection { return connection }
+            let connection = makeConnection()
+            connection.remoteObjectInterface = CleanupInterface.make()
+            connection.interruptionHandler = { [weak self] in self?.interrupted() }
+            connection.invalidationHandler = { [weak self, weak connection] in self?.invalidated(connection) }
+            connection.resume()
+            self.connection = connection
+            return connection
+        }
+    }
+
+    private func interrupted() {
+        let handler = lock.withLock {
+            interruptionCount += 1
+            return interruptionHandler
+        }
+        handler?()
+    }
+
+    private func invalidated(_ old: NSXPCConnection?) {
+        lock.withLock {
+            if connection == nil || connection === old { connection = nil }
+        }
     }
 
     private func call<Reply: Decodable & Sendable>(
@@ -170,17 +239,20 @@ public final class CleanupClient: @unchecked Sendable {
         let once = Once<Reply>()
         return try await withCheckedThrowingContinuation { continuation in
             once.set(continuation)
-            let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                once.finish(.failure(CleanupClientError.connection(error.localizedDescription)))
+            let proxy = activeConnection().remoteObjectProxyWithErrorHandler { error in
+                let code = (error as NSError).code
+                once.finish(.failure(code == NSXPCConnectionInterrupted
+                    ? CleanupClientError.interrupted
+                    : CleanupClientError.connection(error.localizedDescription)))
             }
             guard let service = proxy as? CleanupServiceProtocol else {
                 once.finish(.failure(CleanupClientError.badReply))
                 return
             }
-            Task {
+            once.setTimer(Task {
                 try? await Task.sleep(for: timeout)
                 once.finish(.failure(CleanupClientError.timedOut))
-            }
+            })
             send(service) { data in
                 if let value = try? JSONDecoder().decode(Reply.self, from: data) {
                     once.finish(.success(value))
@@ -193,11 +265,12 @@ public final class CleanupClient: @unchecked Sendable {
 }
 
 /// Resumes a continuation exactly once, whichever of reply, error or
-/// timeout comes first.
+/// timeout comes first, and stops the timeout's task when the reply wins.
 private final class Once<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Value, Error>?
     private var pending: Result<Value, Error>?
+    private var timer: Task<Void, Never>?
     private var done = false
 
     func set(_ continuation: CheckedContinuation<Value, Error>) {
@@ -211,17 +284,32 @@ private final class Once<Value: Sendable>: @unchecked Sendable {
         lock.unlock()
     }
 
+    func setTimer(_ task: Task<Void, Never>) {
+        lock.lock()
+        if done {
+            lock.unlock()
+            task.cancel()
+            return
+        }
+        timer = task
+        lock.unlock()
+    }
+
     func finish(_ result: Result<Value, Error>) {
         lock.lock()
         guard !done else { lock.unlock(); return }
         done = true
+        let timer = self.timer
+        self.timer = nil
         guard let continuation else {
             pending = result
             lock.unlock()
+            timer?.cancel()
             return
         }
         self.continuation = nil
         lock.unlock()
+        timer?.cancel()
         continuation.resume(with: result)
     }
 }

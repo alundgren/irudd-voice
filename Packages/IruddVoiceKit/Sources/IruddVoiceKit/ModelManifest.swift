@@ -60,6 +60,16 @@ public struct ModelManifest: Codable, Equatable, Sendable {
     public static let fileName = "manifest.json"
     public static let supportedSchema = 1
 
+    /// Reads `<folder>/manifest.json`, refusing a missing file, an unknown
+    /// schema, or (when loading by id) an `id` that isn't the folder's name.
+    public static func load(folder: URL, expectedID: String?) throws -> ModelManifest {
+        let manifest = try load(folder: folder)
+        if let expectedID, manifest.id != expectedID {
+            throw ModelFolderError.idMismatch(folder: expectedID, manifest: manifest.id)
+        }
+        return manifest
+    }
+
     /// Reads `<folder>/manifest.json`, refusing a missing file or an unknown schema.
     public static func load(folder: URL) throws -> ModelManifest {
         let url = folder.appendingPathComponent(fileName)
@@ -82,14 +92,16 @@ public struct ModelManifest: Codable, Equatable, Sendable {
 
     /// Checks every file against `files`. Refuses the folder when a listed file
     /// is missing or differs, or when a file in the folder isn't listed.
-    /// Hidden files (".DS_Store") are skipped.
+    /// Dot files (".DS_Store", anything in ".cache/") aren't part of a model
+    /// folder: they're neither hashed nor required, even if listed.
     public func verify(folder: URL) throws {
         let present = try Self.filesInFolder(folder)
-        let unlisted = present.subtracting(files.keys).subtracting([Self.fileName])
+        let listed = files.filter { !Self.isDotPath($0.key) }
+        let unlisted = present.subtracting(listed.keys).subtracting([Self.fileName])
         if let name = unlisted.sorted().first {
             throw ModelFolderError.unlistedFile(name)
         }
-        for (name, expected) in files.sorted(by: { $0.key < $1.key }) {
+        for (name, expected) in listed.sorted(by: { $0.key < $1.key }) {
             guard present.contains(name) else { throw ModelFolderError.missingFile(name) }
             let actual = try Self.sha256(of: folder.appendingPathComponent(name))
             guard actual == expected.lowercased() else {
@@ -98,13 +110,19 @@ public struct ModelManifest: Codable, Equatable, Sendable {
         }
     }
 
-    /// Relative paths of the regular files under `folder`, skipping hidden ones.
+    /// A relative path with a file or folder name starting with ".".
+    static func isDotPath(_ path: String) -> Bool {
+        path.split(separator: "/").contains { $0.hasPrefix(".") }
+    }
+
+    /// Relative paths of the regular files under `folder`, without dot paths.
+    /// Files with the Finder "hidden" flag but no leading dot still count.
     static func filesInFolder(_ folder: URL) throws -> Set<String> {
         let root = folder.standardizedFileURL.resolvingSymlinksInPath().path
         guard let enumerator = FileManager.default.enumerator(
             at: URL(fileURLWithPath: root),
             includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            options: []
         ) else {
             throw ModelFolderError.missingManifest(folder.path)
         }
@@ -113,7 +131,8 @@ public struct ModelManifest: Codable, Equatable, Sendable {
             guard (try url.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else { continue }
             let path = url.resolvingSymlinksInPath().path
             guard path.hasPrefix(root + "/") else { continue }
-            names.insert(String(path.dropFirst(root.count + 1)))
+            let name = String(path.dropFirst(root.count + 1))
+            if !isDotPath(name) { names.insert(name) }
         }
         return names
     }
@@ -136,6 +155,7 @@ public enum ModelFolderError: Error, Equatable, LocalizedError {
     case unknownSchema(Int)
     case missingFile(String)
     case unlistedFile(String)
+    case idMismatch(folder: String, manifest: String)
     case checksumMismatch(String)
     case promptVersionMismatch(model: String, current: String)
 
@@ -145,6 +165,7 @@ public enum ModelFolderError: Error, Equatable, LocalizedError {
         case .unknownSchema(let schema): "manifest.json has unknown schema \(schema)."
         case .missingFile(let name): "\(name) is listed in manifest.json but missing."
         case .unlistedFile(let name): "\(name) is in the model folder but not in manifest.json."
+        case .idMismatch(let folder, let manifest): "The model folder \(folder) has a manifest for \(manifest)."
         case .checksumMismatch(let name): "\(name) doesn't match its checksum in manifest.json."
         case .promptVersionMismatch(let model, let current):
             "The model was trained on prompt \(model), but the current prompt is \(current)."
@@ -197,7 +218,7 @@ public enum ModelPaths {
         (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "z")) || (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
     }
 
-    public static func folder(forModel id: String) -> URL? {
-        isValidID(id) ? modelsFolder.appendingPathComponent(id) : nil
+    public static func folder(forModel id: String, in models: URL = modelsFolder) -> URL? {
+        isValidID(id) ? models.appendingPathComponent(id) : nil
     }
 }

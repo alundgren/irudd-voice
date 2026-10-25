@@ -1,4 +1,5 @@
 import Foundation
+import Hub
 import IruddVoiceKit
 import MLXLMCommon
 import Tokenizers
@@ -7,20 +8,27 @@ import Tokenizers
 /// only. mlx-swift-lm 3.x leaves tokenizers to the app; this replaces the
 /// MLXHuggingFace macros, which would need macro validation in Xcode.
 public struct LocalTokenizerLoader: MLXLMCommon.TokenizerLoader {
-    /// Tokenizer classes swift-transformers 1.3.5 doesn't list but loads
-    /// correctly with its generic BPE tokenizer (what it uses for
-    /// Qwen2Tokenizer): Qwen3.5's tokenizer.json is a plain byte-level BPE.
-    /// The parity check (tests/model-parity.sh) confirms identical prompt tokens.
-    static let plainBPEClasses: Set<String> = ["Qwen3_5Tokenizer"]
+    /// Tokenizer classes swift-transformers 1.3.5 doesn't list, and the
+    /// listed class that loads them the same way. Qwen3.5's tokenizer.json is
+    /// a plain byte-level BPE, like Qwen2's; the parity check
+    /// (tests/model-parity.sh) confirms identical prompt tokens. Renaming the
+    /// class up front avoids swift-transformers' non-strict fallback, which
+    /// prints a warning to stdout on every load.
+    static let classAliases = ["Qwen3_5Tokenizer": "Qwen2Tokenizer"]
 
     public init() {}
 
     public func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
-        do {
-            return TokenizerAdapter(try await AutoTokenizer.from(modelFolder: directory))
-        } catch Tokenizers.TokenizerError.unsupportedTokenizer(let name) where Self.plainBPEClasses.contains(name) {
-            return TokenizerAdapter(try await AutoTokenizer.from(modelFolder: directory, strict: false))
+        let files = LanguageModelConfigurationFromHub(modelFolder: directory)
+        guard var config = try await files.tokenizerConfig else {
+            throw Tokenizers.TokenizerError.missingConfig
         }
+        if let name = config.tokenizerClass?.string(), let alias = Self.classAliases[name] {
+            var dictionary = config.dictionary(or: [:])
+            dictionary["tokenizer_class"] = Config(alias)
+            config = Config(dictionary)
+        }
+        return TokenizerAdapter(try AutoTokenizer.from(tokenizerConfig: config, tokenizerData: try await files.tokenizerData))
     }
 }
 

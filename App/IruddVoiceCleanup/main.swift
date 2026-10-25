@@ -27,7 +27,7 @@ guard let promptURL = Bundle.main.url(forResource: "cleanup-prompt", withExtensi
       let prompt = try? CleanupPrompt.load(from: promptURL) else {
     fatalError("cleanup-prompt.json is missing from the helper's Resources")
 }
-let delegate = ServiceDelegate(handler: CleanupServiceHandler(prompt: prompt))
+let delegate = ServiceDelegate(handler: CleanupServiceHandler(prompt: prompt, backend: CleanupEngine(prompt: prompt)))
 let listener = NSXPCListener.service()
 listener.delegate = delegate
 listener.resume()

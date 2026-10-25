@@ -57,6 +57,27 @@ struct ModelManifestTests {
         #expect(throws: ModelFolderError.missingFile("config.json")) { try manifest.verify(folder: folder) }
     }
 
+    @Test func dotFilesArentPartOfTheFolder() throws {
+        let folder = try makeFolder()
+        let manifest = try ModelManifest.load(folder: folder)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent(".cache/hf"), withIntermediateDirectories: true)
+        try "x".write(to: folder.appendingPathComponent(".cache/hf/lock"), atomically: true, encoding: .utf8)
+        try "x".write(to: folder.appendingPathComponent(".DS_Store"), atomically: true, encoding: .utf8)
+        try manifest.verify(folder: folder)
+        // Listed dot files aren't required either.
+        var listing = manifest
+        listing.files[".gitattributes"] = "0000"
+        try listing.verify(folder: folder)
+    }
+
+    @Test func refusesAWrongID() throws {
+        let folder = try makeFolder()
+        #expect(throws: ModelFolderError.idMismatch(folder: "other-model", manifest: "test-model")) {
+            try ModelManifest.load(folder: folder, expectedID: "other-model")
+        }
+        #expect(try ModelManifest.load(folder: folder, expectedID: "test-model").id == "test-model")
+    }
+
     @Test func refusesUnknownSchemaOrNoManifest() throws {
         let folder = try makeFolder(schema: 2)
         #expect(throws: ModelFolderError.unknownSchema(2)) { try ModelManifest.load(folder: folder) }

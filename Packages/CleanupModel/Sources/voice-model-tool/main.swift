@@ -482,8 +482,10 @@ final class ListenerHost: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
 
 func xpcCheck(_ options: Options) async throws -> Bool {
     let folder = try options.url("model")
+    let verify = !options.flags.contains("no-verify")
     let prompt = try CleanupPrompt.load(from: options.url("prompt", default: repoFolder.appendingPathComponent("shared/cleanup-prompt.json")))
-    let host = ListenerHost(handler: CleanupServiceHandler(prompt: prompt))
+    let engine = CleanupEngine(prompt: prompt)
+    let host = ListenerHost(handler: CleanupServiceHandler(prompt: prompt, backend: engine))
     let client = CleanupClient(endpoint: host.listener.endpoint)
     var ok = true
     func expect(_ condition: Bool, _ label: String) {
@@ -491,23 +493,48 @@ func xpcCheck(_ options: Options) async throws -> Bool {
         ok = ok && condition
     }
     expect(try await client.status().state == .empty, "starts empty")
-    let loaded = try await client.load(LoadRequest(folder: folder.path, verify: !options.flags.contains("no-verify")))
-    expect(loaded.status.state == .ready, "loads \(loaded.status.modelID ?? loaded.status.error ?? "?") in "
+    let loaded = try await client.load(LoadRequest(folder: folder.path, verify: verify))
+    expect(loaded.status.state == .ready, "loads \(loaded.status.modelID ?? loaded.error ?? "?") in "
         + String(format: "%.2f s", loaded.loadSeconds ?? 0))
     let transcript = "um can you check why the build fails on port eight zero eight zero"
-    let response = try await client.clean(CleanRequest(transcript: transcript, vocabulary: ["SwiftUI"]), timeout: .seconds(30))
+    let response = try await client.clean(CleanRequest(transcript: transcript, vocabulary: ["SwiftUI"]))
     let reply = CleanupReply.parse(response.reply ?? "", hitLimit: response.hitLimit, key: prompt.outputKey)
     expect(response.error == nil && response.generatedTokens > 0,
            "cleans: \(String(reflecting: reply.cleaned ?? response.reply ?? response.error ?? "")) "
            + String(format: "(%.2f s)", response.promptSeconds + response.generateSeconds))
+
+    // A 768-token reply would take several seconds; the deadline stops it.
+    let clock = ContinuousClock()
+    var start = clock.now
+    let late = try await client.clean(CleanRequest(transcript: String(repeating: "and then the next step ", count: 60),
+                                                   deadlineSeconds: 0.3))
+    let lateTime = (clock.now - start).seconds
+    start = clock.now
+    let next = try await client.clean(CleanRequest(transcript: transcript))
+    expect(late.timedOut && late.reply == nil && lateTime < 1.5,
+           String(format: "stops at its deadline (0.3 s deadline, answered in %.2f s, %d tokens)", lateTime, late.generatedTokens))
+    expect(next.error == nil && (clock.now - start).seconds < 3,
+           String(format: "the next cleanup isn't held up (%.2f s)", (clock.now - start).seconds))
+
     let status = try await client.status()
     expect(status.state == .ready && (status.residentBytes ?? 0) > 0,
            String(format: "status ready, %.2f GB resident", gigabytes(status.residentBytes ?? 0)))
     expect(try await client.unload().state == .empty, "unloads")
     let refused = try await client.clean(CleanRequest(transcript: "x"))
     expect(refused.reply == nil && refused.error != nil, "refuses to clean when unloaded")
+
+    // Unload while a load is still running: nothing may stay loaded.
+    async let racing = client.load(LoadRequest(folder: folder.path, verify: verify))
+    try await Task.sleep(for: .milliseconds(150))
+    let unloaded = try await client.unload()
+    let raced = try await racing
+    let engineLoaded = await engine.isLoaded
+    let after = try await client.status().state
+    expect(unloaded.state == .empty && raced.error != nil && !engineLoaded && after == .empty,
+           "unload during a load leaves nothing loaded (load said: \(raced.error ?? "ready"))")
+
     let bad = try await client.load(LoadRequest(modelID: "../voice"))
-    expect(bad.status.state == .failed, "refuses a bad model id")
+    expect(bad.error != nil && bad.status.state == .empty, "refuses a bad model id and changes nothing")
     return ok
 }
 

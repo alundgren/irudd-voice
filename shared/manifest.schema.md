@@ -40,9 +40,15 @@ into the database's `models` table with the same `id` and the manifest JSON.
 ```
 
 - `files` lists **every file in the folder except `manifest.json`**, with
-  its SHA-256. The app verifies all of them before the first load of a
-  folder it didn't create itself, and refuses the folder if any differ or
-  are missing.
+  its SHA-256, by path relative to the folder. The app verifies all of them
+  before the first load of a folder it didn't create itself, and refuses
+  the folder if any differ or are missing, or if the folder has a file the
+  list doesn't have.
+- **Dot files aren't part of a model folder.** A path with a file or folder
+  name starting with "." (`.DS_Store`, `.cache/…`) is never hashed, never
+  required and never counts as unlisted, even if `files` lists it.
+- `id` must equal the folder's name. Loading by id refuses a folder whose
+  manifest says otherwise.
 - `chat_template_sha256`: SHA-256 of the bytes of `chat_template.jinja` if
   the folder has one, otherwise of the UTF-8 `chat_template` string in
   `tokenizer_config.json`.

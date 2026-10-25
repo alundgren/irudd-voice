@@ -9,6 +9,12 @@
 # REFERENCE.json comes from `irudd-voice parity-reference` (format:
 # docs/models/parity-format.md). Loads real models: hold the heavy-job lock
 # when running it on a shared Mac. Set VOICE_MODEL_TOOL to skip the build.
+#
+# The exit code is the strict result: identical tokens. When a model differs
+# and a Python with mlx-lm is available (PARITY_PYTHON, or the CLI's `ml`
+# group), tests/parity-gaps.py also prints the tie-aware result: identical
+# prompts, and every differing token within a logit gap of PARITY_MAX_GAP
+# (default 0.5) in Python's own logits.
 set -euo pipefail
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 INPUTS=${PARITY_INPUTS:-$REPO_DIR/evals/parity.jsonl}
@@ -27,6 +33,13 @@ if [ -z "$tool" ]; then
   tool="$build/Build/Products/Release/voice-model-tool"
 fi
 
+python_cmd=()
+if [ -n "${PARITY_PYTHON:-}" ]; then
+  python_cmd=("$PARITY_PYTHON")
+elif grep -q '^ml = ' "$REPO_DIR/cli/pyproject.toml" 2>/dev/null; then
+  python_cmd=(uv run --project "$REPO_DIR/cli" --group ml --quiet python)
+fi
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 failed=0
@@ -42,6 +55,14 @@ while [ $# -gt 0 ]; do
     failed=1
     continue
   fi
-  "$tool" compare --reference "$reference" --swift "$work/$name.json" --model "$model" || failed=1
+  if ! "$tool" compare --reference "$reference" --swift "$work/$name.json" --model "$model"; then
+    failed=1
+    if [ ${#python_cmd[@]} -gt 0 ]; then
+      "${python_cmd[@]}" -I "$REPO_DIR/tests/parity-gaps.py" "$model" "$reference" "$work/$name.json" \
+        --max-gap "${PARITY_MAX_GAP:-0.5}" || true
+    else
+      echo "tie-aware: skipped (no Python with mlx-lm; set PARITY_PYTHON)"
+    fi
+  fi
 done
 exit $failed

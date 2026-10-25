@@ -12,10 +12,13 @@ public struct GenerationResult: Sendable {
     public var tokens: [Int]
     /// The generated text (special tokens kept, so thinking tags show up).
     public var text: String
-    /// The token that ended generation, or nil when it stopped at the limit.
+    /// The token that ended generation, or nil when it stopped at the limit
+    /// or the deadline.
     public var stopToken: Int?
+    /// Stopped at the deadline; `tokens` and `text` are unfinished.
+    public var timedOut: Bool
     /// Stopped at `max_tokens` rather than an end-of-turn token.
-    public var hitLimit: Bool { stopToken == nil }
+    public var hitLimit: Bool { stopToken == nil && !timedOut }
     public var promptSeconds: Double
     public var generateSeconds: Double
 }
@@ -41,7 +44,12 @@ public enum CleanupEngineError: Error, LocalizedError {
 /// Loads a model folder and cleans transcripts with it. Keeps the model in
 /// memory between calls; MLX's buffer cache is capped so it doesn't grow
 /// past what one cleanup needs.
-public actor CleanupEngine {
+///
+/// `load` awaits the model factory, and the actor takes other calls
+/// meanwhile. `LoadSequence` makes the newest load or unload win: a load
+/// that finds a newer one started drops what it loaded and throws
+/// `CleanupBackendError.superseded`.
+public actor CleanupEngine: CleanupBackend {
     /// MLX keeps freed buffers for reuse; this caps how much it keeps.
     public static let cacheLimitBytes = 256 << 20
 
@@ -53,9 +61,12 @@ public actor CleanupEngine {
     /// generation_config.json, the tokenizer's eos, and the chat template's
     /// end-of-turn token. Same rule as the Python CLI (generation.py).
     public private(set) var stopTokens: Set<Int> = []
+    private var sequence = LoadSequence()
 
-    /// Chat-template end-of-turn tokens (Qwen, Gemma 4, older Gemma).
-    static let endOfTurnTokens = ["<|im_end|>", "<turn|>", "<end_of_turn>"]
+    /// End-of-turn tokens (Qwen, Gemma 4, older Gemma) and Qwen's
+    /// <|endoftext|>, which config.json only lists under text_config. Same
+    /// list as the Python CLI (generation.py).
+    static let endOfTurnTokens = ["<|im_end|>", "<turn|>", "<end_of_turn>", "<|endoftext|>"]
 
     public init(prompt: CleanupPrompt) {
         self.prompt = prompt
@@ -69,12 +80,24 @@ public actor CleanupEngine {
     /// version; with `verify`, also checks every file's checksum. Then runs a
     /// one-token warm-up so the first cleanup doesn't pay for Metal setup.
     @discardableResult
-    public func load(folder: URL, verify: Bool = true) async throws -> LoadTimings {
-        unload()
+    public func load(folder: URL, expectedID: String? = nil, verify: Bool = true) async throws -> LoadTimings {
+        try await load(folder: folder, expectedID: expectedID, verify: verify, order: sequence.next).timings
+    }
+
+    public func load(folder: URL, expectedID: String?, verify: Bool, order: UInt64) async throws -> LoadedModel {
+        let (id, timings) = try await load(folder: folder, expectedID: expectedID, verify: verify, order: order)
+        return LoadedModel(id: id, seconds: timings.totalSeconds)
+    }
+
+    private func load(folder: URL, expectedID: String?, verify: Bool, order: UInt64)
+        async throws -> (id: String, timings: LoadTimings)
+    {
+        guard sequence.start(order) else { throw CleanupBackendError.superseded }
+        dropModel()
         let clock = ContinuousClock()
         var manifest: ModelManifest!
         let verifyTime = try clock.measure {
-            manifest = try ModelManifest.load(folder: folder)
+            manifest = try ModelManifest.load(folder: folder, expectedID: expectedID)
             guard manifest.accepts(promptVersion: prompt.version) else {
                 throw ModelFolderError.promptVersionMismatch(model: manifest.promptVersion ?? "", current: prompt.version)
             }
@@ -85,6 +108,8 @@ public actor CleanupEngine {
         let start = clock.now
         let context = try await LLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
         let loadTime = clock.now - start
+        // An unload or a newer load ran while the factory worked: drop this one.
+        guard sequence.isCurrent(order) else { throw CleanupBackendError.superseded }
 
         var stops = Self.configStopTokens(folder: folder)
         if let eos = context.tokenizer.eosTokenId {
@@ -104,10 +129,21 @@ public actor CleanupEngine {
         let warmup = try clock.measure {
             _ = try generate(messages: [ChatMessage(role: "user", content: "Hi")], maxTokens: 1)
         }
-        return LoadTimings(verifySeconds: verifyTime.seconds, loadSeconds: loadTime.seconds, warmupSeconds: warmup.seconds)
+        return (manifest.id, LoadTimings(verifySeconds: verifyTime.seconds, loadSeconds: loadTime.seconds,
+                                         warmupSeconds: warmup.seconds))
     }
 
     public func unload() {
+        unload(order: sequence.next)
+    }
+
+    public func unload(order: UInt64) {
+        // An older unload that arrives after a newer load does nothing.
+        guard sequence.start(order) else { return }
+        dropModel()
+    }
+
+    private func dropModel() {
         context = nil
         manifest = nil
         folder = nil
@@ -115,16 +151,35 @@ public actor CleanupEngine {
         Memory.clearCache()
     }
 
-    /// Cleans one transcript with the shared prompt. The caller parses the
-    /// reply and runs the hard checks.
-    public func clean(transcript: String, vocabulary: [String] = []) throws -> GenerationResult {
-        try generate(messages: prompt.messages(transcript: transcript, terms: vocabulary))
+    /// Cleans one transcript with the shared prompt (the first
+    /// `vocabulary_limit` terms). The caller parses the reply and runs the
+    /// hard checks.
+    public func clean(transcript: String, vocabulary: [String] = [],
+                      deadline: ContinuousClock.Instant? = nil) throws -> GenerationResult {
+        try generate(messages: prompt.messages(transcript: transcript, terms: prompt.usedTerms(vocabulary)),
+                     deadline: deadline)
+    }
+
+    public func clean(transcript: String, vocabulary: [String], deadline: ContinuousClock.Instant) throws -> CleanResponse {
+        let result = try clean(transcript: transcript, vocabulary: vocabulary, deadline: Optional(deadline))
+        return CleanResponse(
+            reply: result.timedOut ? nil : result.text, hitLimit: result.hitLimit, timedOut: result.timedOut,
+            promptTokens: result.promptTokens.count, generatedTokens: result.tokens.count,
+            promptSeconds: result.promptSeconds, generateSeconds: result.generateSeconds,
+            error: result.timedOut ? "Cleanup passed its deadline." : nil)
     }
 
     /// Greedy decoding with the chat template and `chat_template_options`,
-    /// stopping at an end-of-turn/eos token or `max_tokens`.
-    public func generate(messages: [ChatMessage], maxTokens: Int? = nil) throws -> GenerationResult {
+    /// stopping at an end-of-turn/eos token, `max_tokens`, or `deadline`
+    /// (checked before the prompt and after every token; the prompt's own
+    /// forward pass can't be interrupted).
+    public func generate(messages: [ChatMessage], maxTokens: Int? = nil,
+                         deadline: ContinuousClock.Instant? = nil) throws -> GenerationResult {
         guard let context else { throw CleanupEngineError.notLoaded }
+        if let deadline, ContinuousClock.now >= deadline {
+            return GenerationResult(promptTokens: [], tokens: [], text: "", stopToken: nil, timedOut: true,
+                                    promptSeconds: 0, generateSeconds: 0)
+        }
         let limit = maxTokens ?? prompt.generation.maxTokens
         let promptTokens = try context.tokenizer.applyChatTemplate(
             messages: messages.map { ["role": $0.role, "content": $0.content] },
@@ -144,18 +199,23 @@ public actor CleanupEngine {
             input: LMInput(tokens: MLXArray(promptTokens)), model: context.model, parameters: parameters)
         var tokens: [Int] = []
         var stopToken: Int?
+        var timedOut = false
         while let token = iterator.next() {
             if stopTokens.contains(token) {
                 stopToken = token
                 break
             }
             tokens.append(token)
+            if let deadline, clock.now >= deadline {
+                timedOut = true
+                break
+            }
         }
         let total = clock.now - start
         let text = context.tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false)
         return GenerationResult(
             promptTokens: promptTokens, tokens: tokens, text: text,
-            stopToken: stopToken,
+            stopToken: stopToken, timedOut: timedOut,
             promptSeconds: iterator.promptPrefillTime,
             generateSeconds: total.seconds - iterator.promptPrefillTime)
     }
