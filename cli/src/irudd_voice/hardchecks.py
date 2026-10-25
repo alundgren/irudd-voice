@@ -101,6 +101,50 @@ class Reply:
     failure: str | None
 
 
+# JSON nested deeper than this doesn't parse (shared/README.md).
+MAX_JSON_DEPTH = 100
+
+
+class _NotStrictJSON(ValueError):
+    pass
+
+
+def _no_repeated_keys(pairs: list[tuple[str, object]]) -> dict:
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise _NotStrictJSON("repeated key")
+    return dict(pairs)
+
+
+def _no_constants(name: str) -> None:
+    raise _NotStrictJSON(name)  # NaN, Infinity, -Infinity
+
+
+def _check_strict(value: object, depth: int = 1) -> None:
+    """Refuses lone surrogates (from escapes like "\\ud800") and deep nesting."""
+    if isinstance(value, str):
+        if any(0xD800 <= ord(c) <= 0xDFFF for c in value):
+            raise _NotStrictJSON("lone surrogate")
+    elif isinstance(value, (dict, list)):
+        if depth > MAX_JSON_DEPTH:
+            raise _NotStrictJSON("too deep")
+        items = [*value.keys(), *value.values()] if isinstance(value, dict) else value
+        for item in items:
+            _check_strict(item, depth + 1)
+
+
+def strict_json(text: str) -> object:
+    """json.loads, plus the refusals in shared/README.md: repeated keys,
+    NaN/Infinity, lone surrogates, nesting deeper than MAX_JSON_DEPTH. A
+    leading byte order mark already fails in json.loads. Raises ValueError."""
+    try:
+        value = json.loads(text, object_pairs_hook=_no_repeated_keys, parse_constant=_no_constants)
+    except RecursionError:
+        raise _NotStrictJSON("too deep") from None
+    _check_strict(value)
+    return value
+
+
 def parse_reply(text: str, hit_limit: bool = False, key: str = "cleaned") -> Reply:
     """Reads the model's raw reply. `hit_limit` is true when generation
     stopped because it reached max_tokens."""
@@ -112,8 +156,8 @@ def parse_reply(text: str, hit_limit: bool = False, key: str = "cleaned") -> Rep
     if fence:
         stripped = fence.group(1).strip()
     try:
-        value = json.loads(stripped)
-    except json.JSONDecodeError:
+        value = strict_json(stripped)
+    except ValueError:  # includes json.JSONDecodeError
         return Reply(None, "cut_off" if hit_limit else "malformed")
     if not isinstance(value, dict) or not isinstance(value.get(key), str):
         return Reply(None, "malformed")
@@ -161,24 +205,38 @@ def strip_fillers(tokens: list[str]) -> list[str]:
 # ---- Numbers -----------------------------------------------------------------
 
 
-def numbers_in(tokens: list[str]) -> list[int]:
+# Spelled-out numbers above this are unusable: they match nothing
+# (shared/README.md). Digit strings have no limit: they compare as strings.
+SPELLED_LIMIT = 2**53
+
+
+def _decimal(digits: str) -> str:
+    """A digit string without leading zeros. Kept as a string: int() refuses
+    strings over 4300 digits."""
+    return digits.lstrip("0") or "0"
+
+
+def numbers_in(tokens: list[str]) -> list[str | None]:
     """Every number written as digits, digits inside a word ("T3"), or spelled
-    out ("one thousand two hundred", "a hundred", "twenty five")."""
+    out ("one thousand two hundred", "a hundred", "twenty five"), as decimal
+    strings. None is an unusable spelled-out number (over 2**53)."""
     return [value for value, _ in numbers_with_positions(tokens)]
 
 
-def numbers_with_positions(tokens: list[str]) -> list[tuple[int, tuple[int, int]]]:
+def numbers_with_positions(tokens: list[str]) -> list[tuple[str | None, tuple[int, int]]]:
     """Like numbers_in, with each number's word span (first index, last index)."""
-    found: list[tuple[int, tuple[int, int]]] = []
+    found: list[tuple[str | None, tuple[int, int]]] = []
     total = 0  # completed thousands/millions
     current: int | None = None  # the part under the current scale
+    unusable = False
     first = last = -1
 
     def flush() -> None:
-        nonlocal total, current, first, last
-        if current is not None or total:
-            found.append((total + (current if current is not None else 0), (first, last)))
-        total, current, first, last = 0, None, -1, -1
+        nonlocal total, current, unusable, first, last
+        if current is not None or total or unusable:
+            value = total + (current if current is not None else 0)
+            found.append((None if unusable or value > SPELLED_LIMIT else str(value), (first, last)))
+        total, current, unusable, first, last = 0, None, False, -1, -1
 
     def begin(index: int) -> None:
         nonlocal first, last
@@ -189,10 +247,10 @@ def numbers_with_positions(tokens: list[str]) -> list[tuple[int, tuple[int, int]
     for index, token in enumerate(tokens):
         if token.isdigit():
             flush()
-            found.append((int(token), (index, index)))
+            found.append((_decimal(token), (index, index)))
         elif any(c.isdigit() for c in token):
             flush()
-            found.extend((int(run), (index, index)) for run in re.findall(r"[0-9]+", token))
+            found.extend((_decimal(run), (index, index)) for run in re.findall(r"[0-9]+", token))
         elif token in NUMBER_WORDS and not (token == "oh" and current is None and not total):
             value = NUMBER_WORDS[token]
             if current is not None and current % 100 >= 20 and current % 10 == 0 and value < 10:
@@ -215,11 +273,13 @@ def numbers_with_positions(tokens: list[str]) -> list[tuple[int, tuple[int, int]
             if current is None and not total:
                 continue
             base = 1 if current is None else current  # a current of 0 stays 0
-            if scale == 100:
-                current = base * 100
-            else:
-                total += base * scale
-                current = None
+            new_current, new_total = (base * 100, total) if scale == 100 else (None, total + base * scale)
+            if (new_current or 0) > SPELLED_LIMIT or new_total > SPELLED_LIMIT:
+                begin(index)  # the number would pass 2**53: it ends here, unusable
+                unusable = True
+                flush()
+                continue
+            current, total = new_current, new_total
             begin(index)
         elif token == "and" and (current is not None or total):
             continue  # "one hundred and five"
@@ -229,7 +289,9 @@ def numbers_with_positions(tokens: list[str]) -> list[tuple[int, tuple[int, int]
     return found
 
 
-def match_numbers(kept: list[tuple[int, tuple[int, int]]], out: list[int]) -> tuple[list[int], list[int]]:
+def match_numbers(
+    kept: list[tuple[str | None, tuple[int, int]]], out: list[str | None]
+) -> tuple[list[str | None], list[str | None]]:
     """Pairs the speaker's kept numbers with the output's numbers.
 
     First, runs of 2–6 kept numbers spoken back to back (each starting on the
@@ -237,31 +299,31 @@ def match_numbers(kept: list[tuple[int, tuple[int, int]]], out: list[int]) -> tu
     ("eight zero eight zero", "eighty eighty" → "8080"). Longest runs first,
     leftmost first, each matched to an equal output number. Then each
     remaining kept number is matched to an equal output number. Both sides
-    are used up whole; output numbers never split. Comparison is on decimal
-    strings. Returns (kept numbers unmatched, output numbers unmatched)."""
-    left = [str(n) for n in out]
+    are used up whole; output numbers never split. Unusable numbers (None)
+    match nothing. Returns (kept numbers unmatched, output numbers unmatched)."""
+    left = list(out)
     used = [False] * len(kept)
     for length in range(min(6, len(kept)), 1, -1):
         for start in range(len(kept) - length + 1):
             run = range(start, start + length)
-            if any(used[i] for i in run):
+            if any(used[i] or kept[i][0] is None for i in run):
                 continue
             if any(kept[i + 1][1][0] != kept[i][1][1] + 1 for i in range(start, start + length - 1)):
                 continue
-            joined = "".join(str(kept[i][0]) for i in run)
+            joined = "".join(kept[i][0] for i in run)
             if joined in left:
                 left.remove(joined)
                 for i in run:
                     used[i] = True
-    unmatched: list[int] = []
+    unmatched: list[str | None] = []
     for i, (value, _) in enumerate(kept):
         if used[i]:
             continue
-        if str(value) in left:
-            left.remove(str(value))
+        if value is not None and value in left:
+            left.remove(value)
         else:
             unmatched.append(value)
-    return unmatched, [int(n) for n in left]
+    return unmatched, left
 
 
 # ---- Corrections -------------------------------------------------------------

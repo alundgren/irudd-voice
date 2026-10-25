@@ -14,7 +14,10 @@ public struct CleanupReply: Equatable, Sendable {
     /// Reads the model's raw reply (shared/README.md "Reading the reply").
     /// `hitLimit` is true when generation stopped because it reached max_tokens.
     public static func parse(_ text: String, hitLimit: Bool = false, key: String = "cleaned") -> CleanupReply {
-        if HardChecks.thinkTags.contains(where: { text.contains($0) }) {
+        // Searched as UTF-8 bytes: String.contains compares whole characters,
+        // so it would miss "<think>" followed by a combining mark.
+        let bytes = Array(text.utf8)
+        if HardChecks.thinkTags.contains(where: { bytes.contains(subsequence: Array($0.utf8)) }) {
             return CleanupReply(cleaned: nil, failure: .thinkTags)
         }
         var stripped = HardChecks.strip(text)
@@ -22,10 +25,10 @@ public struct CleanupReply: Equatable, Sendable {
         if let fence = HardChecks.fence.firstMatch(in: stripped) {
             stripped = HardChecks.strip(fence[1])
         }
-        guard let value = try? JSONSerialization.jsonObject(with: Data(stripped.utf8), options: .fragmentsAllowed) else {
+        guard let value = StrictJSON.parse(stripped) else {
             return CleanupReply(cleaned: nil, failure: hitLimit ? .cutOff : .malformed)
         }
-        guard let object = value as? [String: Any], let cleaned = object[key] as? String else {
+        guard case .object(let object) = value, case .string(let cleaned)? = object[key] else {
             return CleanupReply(cleaned: nil, failure: .malformed)
         }
         return CleanupReply(cleaned: HardChecks.strip(cleaned), failure: nil)
@@ -109,12 +112,37 @@ public enum HardChecks {
 
     // ---- Text helpers ----------------------------------------------------------
 
-    /// Python's `str.strip()`: drops leading and trailing whitespace.
-    static func strip(_ text: String) -> String {
-        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// The characters Python's `str.isspace()` accepts, which `str.strip()`
+    /// removes (shared/README.md). Foundation's whitespace set differs
+    /// (it lacks U+001C–U+001F, for one).
+    static let pythonWhitespace: Set<UInt32> = [
+        0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x85, 0xA0, 0x1680,
+        0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A,
+        0x2028, 0x2029, 0x202F, 0x205F, 0x3000,
+    ]
+
+    static func isPythonWhitespace(_ scalar: Unicode.Scalar) -> Bool {
+        pythonWhitespace.contains(scalar.value)
     }
 
-    static let fence = Pattern(#"\A```(?:json)?\s*(.*?)\s*```\z"#, dotAll: true)
+    /// Python's `str.strip()`.
+    static func strip(_ text: String) -> String {
+        var scalars = text.unicodeScalars[...]
+        while let first = scalars.first, isPythonWhitespace(first) { scalars = scalars.dropFirst() }
+        while let last = scalars.last, isPythonWhitespace(last) { scalars = scalars.dropLast() }
+        return String(String.UnicodeScalarView(scalars))
+    }
+
+    /// Python's `str.rstrip()`.
+    static func rstrip(_ text: String) -> String {
+        var scalars = text.unicodeScalars[...]
+        while let last = scalars.last, isPythonWhitespace(last) { scalars = scalars.dropLast() }
+        return String(String.UnicodeScalarView(scalars))
+    }
+
+    /// Python's `\s` (the same characters as `str.isspace()`); ICU's `\s` differs.
+    static let pythonSpaceClass = "[" + pythonWhitespace.sorted().map { String(format: "\\x{%X}", $0) }.joined() + "]"
+    static let fence = Pattern(#"\A```(?:json)?"# + pythonSpaceClass + "*(.*?)" + pythonSpaceClass + "*```\\z", dotAll: true)
     static let wordPattern = Pattern("[a-z0-9]+(?:'[a-z]+)?")
     static let identifierPattern = Pattern(
         "[A-Za-z_][A-Za-z0-9_]*(?:[._/-][A-Za-z0-9_]+)+"  // dotted, slashed, snake, kebab
@@ -178,34 +206,41 @@ public enum HardChecks {
     // ---- Numbers ---------------------------------------------------------------
 
     /// A number found in a word list, as a decimal string, with its word span.
+    /// `value` is nil for an unusable spelled-out number (over 2^53), which
+    /// matches nothing.
     struct FoundNumber: Equatable {
-        var value: String
+        var value: String?
         var first: Int
         var last: Int
     }
 
+    /// Spelled-out numbers above this are unusable (shared/README.md). Digit
+    /// strings have no limit: they compare as decimal strings.
+    static let spelledLimit = 1 << 53
+
     /// Every number written as digits, digits inside a word ("T3"), or spelled
     /// out ("one thousand two hundred", "a hundred", "twenty five").
-    static func numbers(in tokens: [String]) -> [String] {
+    static func numbers(in tokens: [String]) -> [String?] {
         numbersWithPositions(tokens).map(\.value)
     }
 
-    /// Like `numbers(in:)`, with each number's word span. Digit strings stay
-    /// strings (Python compares unbounded integers as decimal strings); spelled
-    /// numbers use saturating arithmetic so absurd input can't trap.
+    /// Like `numbers(in:)`, with each number's word span.
     static func numbersWithPositions(_ tokens: [String]) -> [FoundNumber] {
         var found: [FoundNumber] = []
         var total = 0  // completed thousands/millions
         var current: Int?  // the part under the current scale
+        var unusable = false
         var first = -1
         var last = -1
 
         func flush() {
-            if current != nil || total != 0 {
-                found.append(FoundNumber(value: String(add(total, current ?? 0)), first: first, last: last))
+            if current != nil || total != 0 || unusable {
+                let value = total + (current ?? 0)
+                found.append(FoundNumber(value: unusable || value > spelledLimit ? nil : String(value), first: first, last: last))
             }
             total = 0
             current = nil
+            unusable = false
             first = -1
             last = -1
         }
@@ -247,12 +282,18 @@ public enum HardChecks {
                     continue
                 }
                 let base = current ?? 1  // a current of 0 stays 0
-                if scale == 100 {
-                    current = multiply(base, 100)
-                } else {
-                    total = add(total, multiply(base, scale))
-                    current = nil
+                let (product, overflow) = base.multipliedReportingOverflow(by: scale)
+                let newCurrent: Int? = scale == 100 ? product : nil
+                let newTotal = scale == 100 ? total : total + product
+                if overflow || (newCurrent ?? 0) > spelledLimit || newTotal > spelledLimit {
+                    // The number would pass 2^53: it ends here, unusable.
+                    begin(index)
+                    unusable = true
+                    flush()
+                    continue
                 }
+                current = newCurrent
+                total = newTotal
                 begin(index)
             } else if token == "and" && (current != nil || total != 0) {
                 continue  // "one hundred and five"
@@ -264,20 +305,10 @@ public enum HardChecks {
         return found
     }
 
-    static func add(_ a: Int, _ b: Int) -> Int {
-        let (sum, overflow) = a.addingReportingOverflow(b)
-        return overflow ? Int.max : sum
-    }
-
-    static func multiply(_ a: Int, _ b: Int) -> Int {
-        let (product, overflow) = a.multipliedReportingOverflow(by: b)
-        return overflow ? Int.max : product
-    }
-
     /// Pairs the speaker's kept numbers with the output's numbers (see
     /// `match_numbers` in hardchecks.py). Returns (kept numbers unmatched,
-    /// output numbers unmatched).
-    static func matchNumbers(_ kept: [FoundNumber], _ out: [String]) -> (missing: [String], extra: [String]) {
+    /// output numbers unmatched). Unusable numbers (nil) never match.
+    static func matchNumbers(_ kept: [FoundNumber], _ out: [String?]) -> (missing: [String?], extra: [String?]) {
         var left = out
         var used = [Bool](repeating: false, count: kept.count)
         func take(_ value: String) -> Bool {
@@ -289,22 +320,21 @@ public enum HardChecks {
             for length in stride(from: min(6, kept.count), through: 2, by: -1) {
                 for start in 0...(kept.count - length) {
                     let run = start..<(start + length)
-                    if run.contains(where: { used[$0] }) { continue }
+                    if run.contains(where: { used[$0] || kept[$0].value == nil }) { continue }
                     if (start..<(start + length - 1)).contains(where: { kept[$0 + 1].first != kept[$0].last + 1 }) {
                         continue
                     }
-                    let joined = run.map { kept[$0].value }.joined()
+                    let joined = run.compactMap { kept[$0].value }.joined()
                     if take(joined) {
                         for i in run { used[i] = true }
                     }
                 }
             }
         }
-        var unmatched: [String] = []
+        var unmatched: [String?] = []
         for (i, number) in kept.enumerated() where !used[i] {
-            if !take(number.value) {
-                unmatched.append(number.value)
-            }
+            if let value = number.value, take(value) { continue }
+            unmatched.append(number.value)
         }
         return (unmatched, left)
     }
@@ -417,7 +447,7 @@ public enum HardChecks {
                 && (head[0] == "do" || head[0] == "have" ? persons : pronouns).contains(head[1]))
             || (questionWords.contains(head[0]) && helperVerbs.contains(head[1]))
         )
-        if asks && !out.isEmpty && !rstrip(cleaned).hasSuffix("?") {
+        if asks && !out.isEmpty && rstrip(cleaned).unicodeScalars.last != "?" {
             failures.insert("question")
         }
 
@@ -469,14 +499,14 @@ public enum HardChecks {
 
         return checkOrder.filter { failures.contains($0) }
     }
+}
 
-    /// Python's `str.rstrip()`.
-    static func rstrip(_ text: String) -> String {
-        var scalars = text.unicodeScalars[...]
-        while let last = scalars.last, CharacterSet.whitespacesAndNewlines.contains(last) {
-            scalars = scalars.dropLast()
+extension Array where Element == UInt8 {
+    func contains(subsequence needle: [UInt8]) -> Bool {
+        guard !needle.isEmpty, needle.count <= count else { return needle.isEmpty }
+        return (0...(count - needle.count)).contains { start in
+            self[start..<(start + needle.count)].elementsEqual(needle)
         }
-        return String(String.UnicodeScalarView(scalars))
     }
 }
 
