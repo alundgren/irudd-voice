@@ -572,8 +572,8 @@ final class TimingHelper: CleanupHelper, @unchecked Sendable {
 /// The app's cleanup path on a real model, without the app: the helper's
 /// handler over an in-process XPC listener, `CleanupClient`, and
 /// `CleanupCoordinator` on a temp database (the real models folder is only
-/// read). Checks the e2e sentence, a 450-word thought in pieces, the
-/// training lease, and the row fields.
+/// read). Checks the e2e sentence, the 40 questions, a 458-word thought in
+/// pieces, the training lease, and the row fields.
 func thoughtCheck(_ options: Options) async throws -> Bool {
     let models = try options.url("models", default: ModelPaths.modelsFolder)
     let modelID = options.values["model-id"] ?? CleanupDefaults.modelID
@@ -610,6 +610,24 @@ func thoughtCheck(_ options: Options) async throws -> Bool {
     expect(safe, "e2e: \(e2e.outcome.rawValue) in \(e2e.milliseconds) ms, pastes \(String(reflecting: e2e.pasteText))")
     print("     \(e2e.pasteText == expected ? "matches" : "differs from") the expected \(String(reflecting: expected))")
     if e2e.outcome != .cleaned { print("     why: \(e2e.detail)") }
+
+    // The 40 questions and commands through the app's path (plan check
+    // never-answers): what would be pasted is the cleaned request, or the
+    // raw text when the model's reply failed a check; never an answer.
+    var outcomes: [String: Int] = [:]
+    var unsafe: [String] = []
+    for item in try readJSONL(repoFolder.appendingPathComponent("evals/questions.jsonl")) {
+        let result = await coordinator.clean(item.transcript)
+        outcomes[result.outcome.rawValue, default: 0] += 1
+        let pastedFails = !HardChecks.check(transcript: item.transcript, cleaned: result.pasteText,
+                                            maxWordsRatio: prompt.checks.maxOutputWordsRatio,
+                                            maxWordsSlack: prompt.checks.maxOutputWordsSlack).isEmpty
+        if result.outcome == .cleaned && pastedFails || result.outcome != .cleaned && result.pasteText != item.transcript {
+            unsafe.append(item.id ?? item.transcript)
+        }
+    }
+    expect(unsafe.isEmpty, "40 questions: \(outcomes.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", "))"
+           + (unsafe.isEmpty ? "; every paste is the request itself" : "; unsafe: \(unsafe)"))
 
     // A 458-word thought: pieces of at most 120 words, each within the deadline.
     let long = try String(contentsOf: repoFolder.appendingPathComponent("evals/long-thought.txt"), encoding: .utf8)

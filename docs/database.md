@@ -49,5 +49,8 @@ One SQLite file holds everything the app records:
 | `audio`, `audio_format`, `audio_sample_rate`, `audio_bytes` | The whole recording as a FLAC file (16 kHz, 16-bit mono). If FLAC encoding ever fails, raw little-endian floats (`pcm_f32le`) at the mic's rate |
 | `target_app_bundle_id`, `target_app_name` | The app in front when the thought ended |
 | `raw_text`, `recognizer`, `transcribed_at` | Apple's text and which engine produced it |
-| `cleaned_text`, `cleanup_*`, `pasted_text`, `paste_*` | Filled in by later versions |
-| `schema_version`, `app_version`, `prompt_version` | What wrote the row |
+| `cleaned_text` | The model's cleaned text, only when it was used (`cleanup_status` = `cleaned`) |
+| `cleanup_status` | `cleaned`, or why the raw text was pasted instead: `unloaded_for_training`, `no_model`, `no_helper`, `crash`, `timeout`, `cut_off`, `think_tags`, `malformed`, `hard_check`, `empty`, `helper_error`. The `events` row for the chunk says more (which check failed, on which piece, what the model said) |
+| `cleanup_model_id`, `cleanup_ms` | The model that was asked, and how long cleanup took for the whole thought |
+| `pasted_text`, `paste_status`, `pasted_at` | What was pasted (the cleaned or the raw text); `pasted`, `waiting`, `copied`, `discarded` or `empty` |
+| `schema_version`, `app_version`, `prompt_version` | What wrote the row; `prompt_version` is the cleanup prompt the model was asked with |

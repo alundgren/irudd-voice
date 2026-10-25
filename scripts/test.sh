@@ -57,6 +57,14 @@ if [[ -n "${IRUDD_VOICE_PARITY_DIR:-}" ]]; then
   "$tool" xpc-check --model "${pairs[0]}"
 fi
 
+# Slow: the app's cleanup path on the real default model (load, the e2e
+# sentence, a 458-word thought in pieces, the training lease, row fields).
+# Needs the model folder from `irudd-voice models prepare gemma-4-e2b`.
+if [[ -n "${IRUDD_VOICE_CLEANUP_CHECK:-}" ]]; then
+  echo "== Cleanup check (real model)"
+  "$tool" thought-check
+fi
+
 echo "== Probe build"
 swift build -c release --package-path tools/boya-probe
 

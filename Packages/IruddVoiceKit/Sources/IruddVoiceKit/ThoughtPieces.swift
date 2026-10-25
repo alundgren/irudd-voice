@@ -11,10 +11,11 @@ import Foundation
 public enum ThoughtPieces {
     /// The most words in one piece. Gemma 4 E2B (the default model) cleans a
     /// 50-word thought warm in 1.22 s (p50) and 1.39 s (p90) on a MacBook Air
-    /// M5 (docs/models/swift-bench.md). Time grows with the words read and
-    /// written, so 120 words takes about 2.5–3 s: well inside 5 s, with room
-    /// for a slower Mac. The prompt's own forward pass can't be stopped at
-    /// the deadline, so pieces must stay small enough to finish anyway.
+    /// M5 (docs/models/swift-bench.md). In `voice-model-tool thought-check`,
+    /// pieces of 99 and 105 words took 1.92 s and 1.85 s, so a 120-word piece
+    /// takes about 2.2 s: well inside 5 s, with room for a slower Mac. The
+    /// prompt's own forward pass can't be stopped at the deadline, so pieces
+    /// must stay small enough to finish anyway.
     public static let maxWords = 120
 
     /// The pieces of `text`, in order. A thought of `maxWords` words or fewer
