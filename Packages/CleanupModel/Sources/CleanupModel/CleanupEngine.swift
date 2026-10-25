@@ -3,6 +3,7 @@ import IruddVoiceKit
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 /// One greedy generation: the token IDs and how it went.
 public struct GenerationResult: Sendable {
@@ -21,6 +22,33 @@ public struct GenerationResult: Sendable {
     public var hitLimit: Bool { stopToken == nil && !timedOut }
     public var promptSeconds: Double
     public var generateSeconds: Double
+    /// With a drafter: tokens it proposed and how many the model accepted.
+    public var draftedTokens = 0
+    public var acceptedTokens = 0
+    /// With a drafter: why the iterator went back to one token at a time,
+    /// or nil when it kept drafting.
+    public var draftingStopped: String?
+}
+
+/// A drafter for speculative decoding (docs/models/speculative.md): a small
+/// model that guesses the next few tokens, which the cleanup model then
+/// checks in one forward pass. Greedy checking keeps the tokens the model
+/// would have picked itself.
+public struct Drafter: Sendable {
+    /// A drafter folder: Gemma 4's assistant (model_type gemma4_assistant)
+    /// or Qwen3.5's own multi-token head (model_type qwen3_5, `mtp.*`
+    /// weights; see scripts/make-drafter.py).
+    public var folder: URL
+    /// Tokens drafted per round. mlx-swift-lm caps Qwen3.5's head at 1.
+    /// 0 loads the model the way the drafter needs it but generates one
+    /// token at a time, which tells the model class apart from drafting
+    /// when outputs differ.
+    public var draftTokens: Int
+
+    public init(folder: URL, draftTokens: Int) {
+        self.folder = folder
+        self.draftTokens = draftTokens
+    }
 }
 
 /// How long loading took, step by step.
@@ -57,6 +85,8 @@ public actor CleanupEngine: CleanupBackend {
     public private(set) var manifest: ModelManifest?
     public private(set) var folder: URL?
     private var context: ModelContext?
+    private var drafterModel: (any MTPDrafterModel)?
+    private var draftTokens = 0
     /// Generation stops at these: the eos IDs from config.json and
     /// generation_config.json, the tokenizer's eos, and the chat template's
     /// end-of-turn token. Same rule as the Python CLI (generation.py).
@@ -80,8 +110,10 @@ public actor CleanupEngine: CleanupBackend {
     /// version; with `verify`, also checks every file's checksum. Then runs a
     /// one-token warm-up so the first cleanup doesn't pay for Metal setup.
     @discardableResult
-    public func load(folder: URL, expectedID: String? = nil, verify: Bool = true) async throws -> LoadTimings {
-        try await load(folder: folder, expectedID: expectedID, verify: verify, order: sequence.next).timings
+    public func load(folder: URL, expectedID: String? = nil, verify: Bool = true,
+                     drafter: Drafter? = nil) async throws -> LoadTimings {
+        try await load(folder: folder, expectedID: expectedID, verify: verify, drafter: drafter,
+                       order: sequence.next).timings
     }
 
     public func load(folder: URL, expectedID: String?, verify: Bool, order: UInt64) async throws -> LoadedModel {
@@ -89,7 +121,7 @@ public actor CleanupEngine: CleanupBackend {
         return LoadedModel(id: id, seconds: timings.totalSeconds)
     }
 
-    private func load(folder: URL, expectedID: String?, verify: Bool, order: UInt64)
+    private func load(folder: URL, expectedID: String?, verify: Bool, drafter: Drafter? = nil, order: UInt64)
         async throws -> (id: String, timings: LoadTimings)
     {
         guard sequence.start(order) else { throw CleanupBackendError.superseded }
@@ -108,7 +140,7 @@ public actor CleanupEngine: CleanupBackend {
         let start = clock.now
         // An unload or a newer load ran while the factory worked: the
         // weights were dropped inside `loadContext`, before it returned.
-        guard let context = try await loadContext(folder: folder, order: order) else {
+        guard let (context, drafterModel) = try await loadContext(folder: folder, drafter: drafter, order: order) else {
             throw CleanupBackendError.superseded
         }
         let loadTime = clock.now - start
@@ -124,6 +156,8 @@ public actor CleanupEngine: CleanupBackend {
             }
         }
         self.context = context
+        self.drafterModel = drafterModel
+        self.draftTokens = drafter?.draftTokens ?? 0
         self.stopTokens = stops
         self.manifest = manifest
         self.folder = folder
@@ -139,7 +173,9 @@ public actor CleanupEngine: CleanupBackend {
     /// a newer load or unload started meanwhile; the loaded weights are
     /// released before this returns, so an unload waiting for it knows the
     /// memory is free.
-    private func loadContext(folder: URL, order: UInt64) async throws -> ModelContext? {
+    private func loadContext(folder: URL, drafter: Drafter?, order: UInt64) async throws
+        -> (ModelContext, (any MTPDrafterModel)?)?
+    {
         loadsInFlight += 1
         defer {
             loadsInFlight -= 1
@@ -150,14 +186,32 @@ public actor CleanupEngine: CleanupBackend {
                 waiting.forEach { $0.resume() }
             }
         }
-        return try await factoryLoad(folder: folder, order: order)
+        return try await factoryLoad(folder: folder, drafter: drafter, order: order)
     }
 
     /// Kept apart from `loadContext` so a superseded context is released
     /// when this returns, before `loadContext` counts the load as done.
-    private func factoryLoad(folder: URL, order: UInt64) async throws -> ModelContext? {
-        let context = try await LLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
-        return sequence.isCurrent(order) ? context : nil
+    private func factoryLoad(folder: URL, drafter: Drafter?, order: UInt64) async throws
+        -> (ModelContext, (any MTPDrafterModel)?)?
+    {
+        guard let drafter else {
+            let context = try await LLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
+            return sequence.isCurrent(order) ? (context, nil) : nil
+        }
+        await Self.registerDrafters()
+        let drafterModel = try await MTPDrafterModelFactory.shared.load(
+            from: drafter.folder, using: LocalTokenizerLoader()).model
+        // Gemma 4's assistant drafts only for MLXVLM's Gemma 4 class, which
+        // also needs the vision tower's weights in the folder.
+        let context = drafterModel is Gemma4AssistantDraftModel
+            ? try await VLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
+            : try await LLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
+        return sequence.isCurrent(order) ? (context, drafterModel) : nil
+    }
+
+    private static func registerDrafters() async {
+        await Gemma4AssistantRegistration.register()
+        await Qwen35TextMTPRegistration.register()
     }
 
     /// Loads still running in the model factory. `unload` waits for them.
@@ -182,6 +236,7 @@ public actor CleanupEngine: CleanupBackend {
 
     private func dropModel() {
         context = nil
+        drafterModel = nil
         manifest = nil
         folder = nil
         stopTokens = []
@@ -232,8 +287,31 @@ public actor CleanupEngine: CleanupBackend {
         parameters.prefill = PrefillParameters(stepSize: 2048, chunking: .remainder)
         let clock = ContinuousClock()
         let start = clock.now
-        var iterator = try TokenIterator(
-            input: LMInput(tokens: MLXArray(promptTokens)), model: context.model, parameters: parameters)
+        let input = LMInput(tokens: MLXArray(promptTokens))
+        var result: GenerationResult
+        if let drafterModel, draftTokens > 0 {
+            var iterator = try MTPSpeculativeTokenIterator(
+                input: input, mainModel: context.model, drafter: drafterModel, parameters: parameters,
+                blockSize: draftTokens + 1)
+            result = run(&iterator, deadline: deadline, clock: clock, start: start)
+            result.draftedTokens = iterator.proposedCount
+            result.acceptedTokens = iterator.acceptedCount
+            result.draftingStopped = iterator.passthroughReason
+        } else {
+            var iterator = try TokenIterator(input: input, model: context.model, parameters: parameters)
+            result = run(&iterator, deadline: deadline, clock: clock, start: start)
+        }
+        result.promptTokens = promptTokens
+        result.text = context.tokenizer.decode(tokenIds: result.tokens, skipSpecialTokens: false)
+        return result
+    }
+
+    /// The token loop for either iterator: stops at a stop token, the
+    /// iterator's `max_tokens`, or `deadline`.
+    private func run<Iterator: TokenIteratorProtocol>(
+        _ iterator: inout Iterator, deadline: ContinuousClock.Instant?, clock: ContinuousClock,
+        start: ContinuousClock.Instant
+    ) -> GenerationResult {
         var tokens: [Int] = []
         var stopToken: Int?
         var timedOut = false
@@ -249,9 +327,8 @@ public actor CleanupEngine: CleanupBackend {
             }
         }
         let total = clock.now - start
-        let text = context.tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false)
         return GenerationResult(
-            promptTokens: promptTokens, tokens: tokens, text: text,
+            promptTokens: [], tokens: tokens, text: "",
             stopToken: stopToken, timedOut: timedOut,
             promptSeconds: iterator.promptPrefillTime,
             generateSeconds: total.seconds - iterator.promptPrefillTime)

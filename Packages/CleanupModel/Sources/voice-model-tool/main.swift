@@ -15,7 +15,9 @@ import MLX
 //   thought-check [--models DIR] [--model-id ID]   (the app's cleanup path, see below)
 //
 // Common options: --prompt FILE (default shared/cleanup-prompt.json),
-// --no-verify (skip manifest checksums).
+// --no-verify (skip manifest checksums). generate, eval and bench also take
+// --draft DIR [--draft-tokens 3]: speculative decoding with a drafter folder
+// (docs/models/speculative.md).
 
 let repoFolder = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()  // voice-model-tool
@@ -113,6 +115,19 @@ func percentile(_ values: [Double], _ p: Double) -> Double {
 
 func round3(_ value: Double) -> Double { (value * 1000).rounded() / 1000 }
 
+func drafter(_ options: Options) throws -> Drafter? {
+    guard let folder = options.values["draft"] else { return nil }
+    let count = try options.int("draft-tokens", default: 3)
+    guard count >= 0 else { throw ToolError("--draft-tokens must be 0 or more") }
+    return Drafter(folder: URL(fileURLWithPath: folder), draftTokens: count)
+}
+
+/// "drafted 120, accepted 96 (80%)" for a run with a drafter.
+func draftSummary(drafted: Int, accepted: Int, stopped: String?) -> String {
+    let rate = drafted > 0 ? Int((Double(accepted) / Double(drafted) * 100).rounded()) : 0
+    return "drafted \(drafted), accepted \(accepted) (\(rate)%)" + (stopped.map { "; drafting stopped: \($0)" } ?? "")
+}
+
 func makeEngine(_ options: Options) throws -> CleanupEngine {
     let prompt = try CleanupPrompt.load(from: options.url("prompt", default: repoFolder.appendingPathComponent("shared/cleanup-prompt.json")))
     return CleanupEngine(prompt: prompt)
@@ -151,7 +166,7 @@ func generate(_ options: Options) async throws {
     let out = try options.url("out")
     let maxTokens = try options.int("max-tokens", default: 96)
     let engine = try makeEngine(options)
-    try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"))
+    try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"), drafter: drafter(options))
     let prompt = engine.prompt
     var items: [ParityFile.Item] = []
     for (index, item) in try readJSONL(inputs).enumerated() {
@@ -160,7 +175,10 @@ func generate(_ options: Options) async throws {
         let result = try await engine.generate(messages: messages, maxTokens: maxTokens)
         let id = item.id ?? String(index + 1)
         log("\(id): \(result.promptTokens.count) prompt tokens, \(result.tokens.count) generated, "
-            + String(format: "%.2f s", result.promptSeconds + result.generateSeconds))
+            + String(format: "%.2f s", result.promptSeconds + result.generateSeconds)
+            + (result.draftedTokens > 0 || result.draftingStopped != nil
+                ? ", " + draftSummary(drafted: result.draftedTokens, accepted: result.acceptedTokens,
+                                      stopped: result.draftingStopped) : ""))
         items.append(.init(
             id: id, transcript: item.transcript, vocabulary: item.vocabulary ?? [],
             prompt: try await engine.decode(result.promptTokens),
@@ -173,7 +191,8 @@ func generate(_ options: Options) async throws {
         manifest_sha256: try sha256(folder.appendingPathComponent(ModelManifest.fileName)),
         prompt_version: prompt.version, inputs_sha256: try sha256(inputs),
         chat_template_options: prompt.chatTemplateOptions, max_new_tokens: maxTokens,
-        stop_token_ids: await engine.stopTokens.sorted(), runner: "mlx-swift-lm 3.32.3",
+        stop_token_ids: await engine.stopTokens.sorted(),
+        runner: "mlx-swift-lm 3.32.3" + (options.values["draft"].map { " draft \(URL(fileURLWithPath: $0).lastPathComponent)" } ?? ""),
         items: items), to: out)
     log("wrote \(out.path)")
 }
@@ -310,15 +329,20 @@ func evaluate(_ options: Options) async throws -> Bool {
     }
     let inputs = try options.url("inputs", default: repoFolder.appendingPathComponent("evals/\(set).jsonl"))
     let engine = try makeEngine(options)
-    try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"))
+    try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"), drafter: drafter(options))
     let prompt = engine.prompt
     var items: [EvalReport.Item] = []
     var replyFailures: [String: Int] = [:]
     var checkFailures: [String: Int] = [:]
+    var drafted = 0, accepted = 0
+    var stopped: String?
     for (index, input) in try readJSONL(inputs).enumerated() {
         let id = input.id ?? String(index + 1)
         let terms = prompt.usedTerms(input.vocabulary ?? [])
         let result = try await engine.clean(transcript: input.transcript, vocabulary: terms)
+        drafted += result.draftedTokens
+        accepted += result.acceptedTokens
+        stopped = stopped ?? result.draftingStopped
         let reply = CleanupReply.parse(result.text, hitLimit: result.hitLimit, key: prompt.outputKey)
         var checks: [String] = []
         if let cleaned = reply.cleaned {
@@ -341,7 +365,8 @@ func evaluate(_ options: Options) async throws -> Bool {
     let exact = items.contains { $0.expected != nil } ? items.filter { $0.matchesExpected == true }.count : nil
     let manifest = try require(await engine.manifest)
     let report = EvalReport(
-        model_id: manifest.id, set: set, prompt_version: prompt.version, runner: "swift (mlx-swift-lm 3.32.3)",
+        model_id: manifest.id, set: set, prompt_version: prompt.version,
+        runner: "swift (mlx-swift-lm 3.32.3)" + (options.values["draft"].map { ", draft \(URL(fileURLWithPath: $0).lastPathComponent)" } ?? ""),
         items_total: items.count, items_failed: failed, reply_failures: replyFailures,
         check_failures: checkFailures, exact_matches: exact, items: items)
     if let out = options.values["out"] {
@@ -350,7 +375,8 @@ func evaluate(_ options: Options) async throws -> Bool {
     print("\(manifest.id) \(set): \(items.count - failed)/\(items.count) passed, \(failed) failed"
         + (exact.map { ", \($0) exact matches" } ?? "")
         + (replyFailures.isEmpty ? "" : ", reply failures \(replyFailures)")
-        + (checkFailures.isEmpty ? "" : ", check failures \(checkFailures)"))
+        + (checkFailures.isEmpty ? "" : ", check failures \(checkFailures)")
+        + (options.values["draft"] == nil ? "" : "; " + draftSummary(drafted: drafted, accepted: accepted, stopped: stopped)))
     return failed == 0
 }
 
@@ -380,11 +406,16 @@ struct BenchReport: Codable {
     var peak_footprint_gb: Double
     var mlx_peak_gb: Double
     var soak: Soak?
+    var drafter: String?
+    var draft_tokens: Int?
+    var drafted_tokens: Int?
+    var accepted_tokens: Int?
+    var drafting_stopped: String?
 }
 
 /// One cleanup the way the app will run it: generate, parse, hard checks.
-/// Returns the wall-clock seconds and the number of generated tokens.
-func timedCleanup(_ engine: CleanupEngine, _ transcript: String) async throws -> (Double, Int) {
+/// Returns the wall-clock seconds and the generation result.
+func timedCleanup(_ engine: CleanupEngine, _ transcript: String) async throws -> (Double, GenerationResult) {
     let clock = ContinuousClock()
     let start = clock.now
     let result = try await engine.clean(transcript: transcript)
@@ -393,7 +424,7 @@ func timedCleanup(_ engine: CleanupEngine, _ transcript: String) async throws ->
     if let cleaned = reply.cleaned {
         _ = HardChecks.check(transcript: transcript, cleaned: cleaned)
     }
-    return ((clock.now - start).seconds, result.tokens.count)
+    return ((clock.now - start).seconds, result)
 }
 
 func bench(_ options: Options) async throws {
@@ -403,16 +434,24 @@ func bench(_ options: Options) async throws {
     let inputs = try readJSONL(try options.url("inputs", default: repoFolder.appendingPathComponent("evals/bench.jsonl")))
     guard !inputs.isEmpty else { throw ToolError("no bench inputs") }
     let engine = try makeEngine(options)
-    let cold = try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"))
+    let draft = try drafter(options)
+    let cold = try await engine.load(folder: folder, verify: !options.flags.contains("no-verify"), drafter: draft)
     log(String(format: "cold: verify %.2f s, load %.2f s, warm-up %.2f s", cold.verifySeconds, cold.loadSeconds, cold.warmupSeconds))
 
     var warm: [Double] = []
     var tokens: [Int] = []
+    var drafted = 0, accepted = 0
+    var stopped: String?
     for run in 0..<runs {
-        let (seconds, count) = try await timedCleanup(engine, inputs[run % inputs.count].transcript)
+        let (seconds, result) = try await timedCleanup(engine, inputs[run % inputs.count].transcript)
         warm.append(round3(seconds))
-        tokens.append(count)
-        log(String(format: "run %d: %.3f s, %d tokens", run + 1, seconds, count))
+        tokens.append(result.tokens.count)
+        drafted += result.draftedTokens
+        accepted += result.acceptedTokens
+        stopped = stopped ?? result.draftingStopped
+        log(String(format: "run %d: %.3f s, %d tokens", run + 1, seconds, result.tokens.count)
+            + (draft == nil ? "" : ", " + draftSummary(drafted: result.draftedTokens, accepted: result.acceptedTokens,
+                                                       stopped: result.draftingStopped)))
     }
 
     var soak: BenchReport.Soak?
@@ -448,7 +487,9 @@ func bench(_ options: Options) async throws {
         warm_p50_seconds: round3(percentile(warm, 50)), warm_p90_seconds: round3(percentile(warm, 90)),
         runs_within_2s: warm.filter { $0 <= 2 }.count, generated_tokens: tokens,
         peak_footprint_gb: gigabytes(footprint().peak), mlx_peak_gb: gigabytes(UInt64(Memory.peakMemory)),
-        soak: soak)
+        soak: soak, drafter: draft?.folder.lastPathComponent, draft_tokens: draft?.draftTokens,
+        drafted_tokens: draft.map { _ in drafted }, accepted_tokens: draft.map { _ in accepted },
+        drafting_stopped: stopped)
     if let out = options.values["out"] {
         try writeJSON(report, to: URL(fileURLWithPath: out))
     }

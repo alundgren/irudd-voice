@@ -11,6 +11,9 @@ hard checks it was made with.
   closeness to the expected output (transcripts).
 - `parity-format.md`: the token file `irudd-voice parity-reference` writes
   for the Swift parity check.
+- `speculative.md`: speculative decoding with a drafter (Gemma 4's
+  assistant, Qwen3.5's MTP head): output checks, speed and the
+  recommendation.
 
 ## Prepare (2026-10-25)
 

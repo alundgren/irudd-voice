@@ -21,6 +21,8 @@ let package = Package(
             name: "CleanupModel",
             dependencies: [
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                // Gemma 4's assistant drafter and the Gemma 4 class it drafts for.
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "Hub", package: "swift-transformers"),
