@@ -215,10 +215,11 @@ def read_report(source: str, path: Path) -> tuple[dict, str | None]:
     return row["report"], source
 
 
-def spot_check(report: dict, transcripts: dict[int, str], pairs: int, rng: random.Random, ask=input,
+def spot_check(report: dict, transcripts: dict[int, str], pairs: int, rng: random.Random, ask=None,
                out=print) -> dict:
     """Shows up to `pairs` decided pairs in random A/B order and counts how
     often the answer matches the judge."""
+    ask = ask or input
     decided = [item for item in report["items"]
                if item["vote"] in judge.DECIDED and item["chunk_id"] in transcripts]
     if not decided:

@@ -50,7 +50,7 @@ CANDIDATES = {
 }
 
 # The model the app uses while active_model is empty: the baseline pick
-# (docs/models/README.md: the only candidate passing the hard-check gate).
+# (docs/models/baseline.md: gemma-4-e2b-base-q4).
 DEFAULT_CANDIDATE = "gemma-4-e2b"
 
 
