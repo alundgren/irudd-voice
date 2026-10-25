@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Teacher reply",
+  "type": "object",
+  "properties": {
+    "cleaned": {"type": "string"}
+  },
+  "required": ["cleaned"],
+  "additionalProperties": false
+}
