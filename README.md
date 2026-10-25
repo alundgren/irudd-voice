@@ -1,3 +1,5 @@
+<img src="docs/brand/icon-128.png" width="96" alt="irudd-voice icon">
+
 # irudd-voice
 
 A macOS menu-bar dictation app for writing prompts to coding agents. Unmute
