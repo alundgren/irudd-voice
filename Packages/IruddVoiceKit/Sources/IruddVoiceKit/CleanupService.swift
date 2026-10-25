@@ -49,10 +49,13 @@ public struct CleanupStatus: Codable, Equatable, Sendable {
 public struct LoadRequest: Codable, Equatable, Sendable {
     public var modelID: String?
     public var folder: String?
+    /// Check every file's checksum against the manifest first (default true).
+    public var verify: Bool?
 
-    public init(modelID: String? = nil, folder: String? = nil) {
+    public init(modelID: String? = nil, folder: String? = nil, verify: Bool? = nil) {
         self.modelID = modelID
         self.folder = folder
+        self.verify = verify
     }
 }
 
