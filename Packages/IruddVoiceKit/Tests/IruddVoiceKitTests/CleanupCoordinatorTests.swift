@@ -423,3 +423,62 @@ struct WordDiffTests {
         #expect(WordDiff.compare(heard: "x", pasted: "").heard == [WordDiff.Word("x", kept: false)])
     }
 }
+
+struct ModelOverviewTests {
+    @Test func defaultBaseModel() async throws {
+        let fixture = try CleanupFixture()
+        let overview = await ModelOverview.read(store: fixture.store, modelsFolder: fixture.modelsFolder)
+        #expect(overview == ModelOverview(activeID: CleanupDefaults.modelID, isDefault: true))
+    }
+
+    @Test func trainedModelWithAnEvalReport() async throws {
+        let trained = "gemma-4-e2b-ft-20261025-1"
+        let fixture = try CleanupFixture(models: [CleanupDefaults.modelID, trained])
+        let manifest = """
+            {"schema": 1, "id": "\(trained)", "family": "gemma4", "base_repo": "google/gemma-4-E2B-it",
+             "base_revision": "abc", "tokenizer_sha256": "t", "chat_template_sha256": "c",
+             "prompt_version": "cleanup-v1", "files": {},
+             "training": {"method": "lora", "dataset_hash": "d", "chunks": 412, "layers": 16,
+                          "iterations": 600, "mlx_lm_version": "0.32.2", "trained_at": "2026-10-25T12:00:00Z"},
+             "created_at": "2026-10-25T12:00:00Z"}
+            """
+        let report = """
+            {"kind": "eval-compare", "version": 1, "incumbent": {"id": "\(CleanupDefaults.modelID)"},
+             "created_at": "2026-10-25T13:00:00Z",
+             "summary": {"compared": 120, "votes": {"win": 60, "loss": 40, "tie": 15, "same": 5, "split": 0, "failed": 0},
+                         "decided": 100, "win_rate": 0.6,
+                         "hard_checks": {"candidate_thoughts_failed": 3, "incumbent_thoughts_failed": 7, "new_failures": 0}},
+             "decision": {"promotable": true, "reasons": []}}
+            """
+        let db = try fixture.cli()
+        try db.query("""
+            INSERT INTO models (id, base_repo, base_revision, manifest_json, trained_chunks, eval_report_json, created_at)
+            VALUES (?, 'google/gemma-4-E2B-it', 'abc', ?, 412, ?, '2026-10-25T12:00:00.000Z')
+            """, [.text(trained), .text(manifest), .text(report)])
+        try db.query("""
+            INSERT INTO models (id, base_repo, base_revision, manifest_json, created_at)
+            VALUES (?, 'google/gemma-4-E2B-it', 'abc', '{}', '2026-10-25T10:00:00.000Z')
+            """, [.text(CleanupDefaults.modelID)])
+        try db.query("""
+            INSERT INTO active_model (slot, model_id, previous_model_id, changed_at)
+            VALUES (1, ?, ?, '2026-10-25T13:05:00.000Z')
+            """, [.text(trained), .text(CleanupDefaults.modelID)])
+        let overview = await ModelOverview.read(store: fixture.store, modelsFolder: fixture.modelsFolder)
+        #expect(overview.activeID == trained)
+        #expect(!overview.isDefault)
+        #expect(overview.previousID == CleanupDefaults.modelID)
+        #expect(overview.training?.chunks == 412)
+        #expect(overview.training?.trainedAt == "2026-10-25T12:00:00Z")
+        let eval = try #require(overview.eval)
+        #expect(eval.incumbentID == CleanupDefaults.modelID)
+        #expect(eval.wins == 60 && eval.decided == 100 && eval.compared == 120)
+        #expect(eval.winPercent == 60)
+        #expect(eval.thoughtsFailed == 3 && eval.incumbentThoughtsFailed == 7)
+        #expect(eval.promotable == true)
+    }
+
+    @Test func notAReport() {
+        #expect(EvalSummary.parse("{}") == nil)
+        #expect(EvalSummary.parse("not json") == nil)
+    }
+}
