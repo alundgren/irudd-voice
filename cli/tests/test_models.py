@@ -3,6 +3,7 @@
 import json
 import re
 import sqlite3
+import sys
 
 import pytest
 
@@ -119,3 +120,10 @@ def test_record_inserts_and_updates_the_row(tmp_path, app_db):
     assert rows[0][:5] == (folder.name, cand.repo, cand.revision, None, "2026-10-25T11:00:00Z")
     assert json.loads(rows[0][5]) == second
     assert con.execute("SELECT model_id FROM active_model").fetchone() == (folder.name,)
+
+
+def test_model_commands_explain_the_ml_group(tmp_path, monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "mlx_lm", None)
+    assert cli.main(["models", "prepare", "qwen3.5-2b", "--models-dir", str(tmp_path)]) == 1
+    assert "uv run --group ml" in capsys.readouterr().err
+    assert not any(tmp_path.iterdir())

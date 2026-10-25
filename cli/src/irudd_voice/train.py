@@ -71,8 +71,10 @@ class LoraSettings:
     rank: int = 8
     scale: float = 20.0
     dropout: float = 0.0
-    iterations: int = 80
-    learning_rate: float = 5e-5
+    iterations: int = 60
+    # 5e-5 with scale 20 overfit the 40 tiny examples badly enough to break
+    # spelling ("revers a string") on one batch order and not on another.
+    learning_rate: float = 1e-5
     batch_size: int = 1
     grad_checkpoint: bool = True
     max_seq_length: int = 1024
@@ -163,6 +165,7 @@ def train_lora(model, tokenizer, family: str, train_rows: list[dict], valid_rows
     returns the losses."""
     import mlx.core as mx
     import mlx.optimizers as optim
+    import numpy as np
     from mlx_lm.tuner.callbacks import TrainingCallback
     from mlx_lm.tuner.trainer import TrainingArgs, train
     from mlx_lm.tuner.utils import linear_to_lora_layers
@@ -172,6 +175,7 @@ def train_lora(model, tokenizer, family: str, train_rows: list[dict], valid_rows
     valid_set = [tokenize(tokenizer, row, options) for row in valid_rows]
 
     mx.random.seed(settings.seed)
+    np.random.seed(settings.seed)  # mlx-lm shuffles batches with numpy's global state
     model.freeze()
     if settings.layers > len(model.layers):
         raise ModelError(f"the model has only {len(model.layers)} layers")
