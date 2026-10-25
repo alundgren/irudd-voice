@@ -177,6 +177,24 @@ struct StorageTests {
         try await store.deleteAllRecordings()
         #expect(try await store.count() == 0)
     }
+
+    @Test func deleteAllRemovesTextFromEvalReports() async throws {
+        let path = temporaryDatabasePath()
+        let store = try ChunkStore(path: path)
+        let db = try Database(path: path)
+        let report = #"{"kind": "eval-compare", "summary": {"compared": 1}, "items": [{"chunk_id": 1, "candidate": {"pasted": "my secret thought"}}]}"#
+        _ = try db.query("""
+            INSERT INTO models (id, base_repo, base_revision, manifest_json, eval_report_json, created_at)
+            VALUES ('trained', 'repo', 'rev', '{}', ?, 'now'), ('base', 'repo', 'rev', '{}', NULL, 'now')
+            """, [.text(report)])
+        try await store.deleteAllRecordings()
+        let rows = try db.query("SELECT id, eval_report_json FROM models ORDER BY id")
+        #expect(rows.map { $0[0].text } == ["base", "trained"])
+        #expect(rows[0][1].text == nil)
+        let kept = try #require(rows[1][1].text)
+        #expect(!kept.contains("my secret thought") && !kept.contains("items"))
+        #expect(kept.contains(#""summary":{"compared":1}"#))
+    }
 }
 
 /// Never answers and ignores cancellation, like a stuck recognizer.
