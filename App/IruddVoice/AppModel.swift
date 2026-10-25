@@ -93,6 +93,13 @@ final class AppModel {
         hotkey = preferences.hotkey
         permissions.micPicked = pinnedUID != nil
 
+        // Open the database first, so everything after this can log to it.
+        do {
+            store = try ChunkStore()
+        } catch {
+            databaseError = "Can't open the database: \(error)"
+        }
+
         capture.onEvent = { [weak self] event in self?.handle(event) }
         capture.onLevel = { [weak self] peak in self?.level = peak }
         capture.onTrouble = { [weak self] reason in
@@ -115,11 +122,6 @@ final class AppModel {
             hotkeyError = "\(hotkey?.display ?? "The hotkey") is already used by another app."
         }
 
-        do {
-            store = try ChunkStore()
-        } catch {
-            databaseError = "Can't open the database: \(error)"
-        }
         overlay = OverlayController(model: self)
         log(.info, "app", "Started \(Self.appVersion)")
         Task {
