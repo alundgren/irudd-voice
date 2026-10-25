@@ -3,8 +3,9 @@
 Reads only what the user typed (user messages) in:
 
 - Claude Code: ~/.claude/projects/<project>/<session>.jsonl (lines with
-  `type` "user"; tool results, meta lines, subagent sidechains and
-  system-sent prompts are skipped).
+  `type` "user"; tool results, meta lines, compaction summaries,
+  transcript-only lines, subagent sidechains and system-sent prompts are
+  skipped).
 - Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl (`response_item`
   messages with role "user"; injected AGENTS.md and environment blocks are
   skipped).
@@ -94,7 +95,8 @@ def claude_sessions(root: Path) -> Iterator[Session]:
         session = Session("claude", path)
         for line in _jsonl(path):
             session.cwd = session.cwd or line.get("cwd") or ""
-            if line.get("type") != "user" or line.get("isSidechain") or line.get("isMeta"):
+            if line.get("type") != "user" or line.get("isSidechain") or line.get("isMeta") \
+                    or line.get("isCompactSummary") or line.get("isVisibleInTranscriptOnly"):
                 continue
             if line.get("promptSource") == "system":
                 continue
@@ -187,6 +189,20 @@ _WRAPPERS = re.compile(r"</?(?:user_query|user_request)>")
 _BLOCK = re.compile(r"<([a-zA-Z][\w-]*)(?:\s[^>]*)?>.*?</\1>", flags=re.DOTALL)
 _TAG = re.compile(r"</?[a-zA-Z][\w-]*(?:\s[^>]*)?/?>")
 _URL = re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", flags=re.IGNORECASE)
+_EMAIL = re.compile(r"\S+@\S+")
+# Tokens and keys: known prefixes, and long runs mixing letters and digits.
+_SECRET = re.compile(
+    r"\b(?:gh[pousr]_|github_pat_|sk-|xox[abprs]-|AKIA)[\w-]*"
+    r"|(?<![\w.-])(?=[\w+/=-]*[A-Za-z])(?=[\w+/=-]*\d)[\w+/=-]{20,}"
+)
+# Host names (example.com, api.internal.example.dev) and IP addresses. File
+# names like hardchecks.py or README.md don't end in these.
+_DOMAIN = re.compile(
+    r"\b(?:[A-Za-z0-9-]+\.)+(?:com|org|net|io|dev|ai|co|se|uk|de|eu|us|me|info|biz|cloud|tech|xyz|ts\.net"
+    r"|local|internal|lan)\b(?![\w-])",
+    flags=re.IGNORECASE,
+)
+_IP = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 # Absolute and home paths: their folders are often private (account names).
 _ABSOLUTE_PATH = re.compile(r"(?<![\w.])[~/][^\s\"'`)]*")
 _CODE_BLOCK = re.compile(r"```.*?(?:```|$)", flags=re.DOTALL)
@@ -196,13 +212,17 @@ _HEX = re.compile(r"[0-9a-f]{7,}|[0-9a-f]{8}-[0-9a-f-]+", flags=re.IGNORECASE)
 
 
 def user_words(text: str) -> str:
-    """The text the user typed, without client wrappers, URLs, absolute
-    paths or code blocks."""
+    """The text the user typed, without client wrappers, code blocks, URLs,
+    emails, secrets, host names or absolute paths."""
     text = _WRAPPERS.sub("", text)
     text = _BLOCK.sub(" ", text)
     text = _TAG.sub(" ", text)
     text = _CODE_BLOCK.sub(" ", text)
     text = _URL.sub(" ", text)
+    text = _EMAIL.sub(" ", text)
+    text = _SECRET.sub(" ", text)
+    text = _DOMAIN.sub(" ", text)
+    text = _IP.sub(" ", text)
     text = _ABSOLUTE_PATH.sub(" ", text)
     # Contractions ("doesn't", "it's") are never vocabulary; without this
     # "doesn" would look like a term.

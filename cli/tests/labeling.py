@@ -66,6 +66,18 @@ replies = json.loads(Path(os.environ["FAKE_TEACHER_REPLIES"]).read_text())
 reply = replies.get(transcript, {"text": json.dumps({"cleaned": transcript})})
 if reply.get("exit"):
     sys.exit(reply["exit"])
+if reply.get("delete_chunk"):
+    import sqlite3
+    con = sqlite3.connect(reply["delete_chunk"])
+    con.execute("DELETE FROM chunks WHERE raw_text = ?", (transcript,))
+    con.commit()
+    con.close()
+if reply.get("hang"):
+    # Like the real shims: a child process that would outlive a plain kill.
+    import subprocess, time
+    child = subprocess.Popen(["sleep", "60"])
+    Path(reply["hang"]).write_text(str(child.pid))
+    time.sleep(60)
 
 if name == "claude":
     out = {"type": "result", "subtype": "success", "is_error": False, "result": reply.get("text", ""),
@@ -78,6 +90,8 @@ if name == "claude":
     print(json.dumps(out))
 else:
     events = [{"type": "thread.started", "thread_id": "fake"}, {"type": "turn.started"}]
+    if reply.get("item_type"):
+        events.append({"type": "item.completed", "item": {"id": "item_9", "type": reply["item_type"]}})
     if reply.get("command"):
         events.append({"type": "item.started", "item": {"id": "item_0", "type": "command_execution",
                                                         "command": "ls", "status": "in_progress"}})
@@ -95,7 +109,9 @@ else:
 class FakeTeachers:
     """`claude` and `codex` stubs on PATH that answer from a table:
     transcript → {"text": reply text, "structured": object, "command": true,
-    "exit": code}. Unknown transcripts get {"cleaned": <transcript>}."""
+    "item_type": extra Codex item, "exit": code, "delete_chunk": database,
+    "hang": file for the child's pid}. Unknown transcripts get
+    {"cleaned": <transcript>}."""
 
     def __init__(self, folder: Path, monkeypatch):
         self.bin = folder / "bin"

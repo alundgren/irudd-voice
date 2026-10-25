@@ -9,9 +9,12 @@ log a teacher run leaves behind.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -25,8 +28,20 @@ TIMEOUT_SECONDS = 300
 TEACHERS = ("claude", "codex")
 CALL_FAILURES = ("teacher_error", "timeout")
 
-# Codex event items that mean the teacher did something besides answering.
-CODEX_TOOL_ITEMS = {"command_execution", "file_change", "mcp_tool_call", "web_search", "collab_tool_call"}
+# Codex event items allowed in a label run. Any other item (a command, file
+# change, MCP, web, image or agent call, or a type added later) rejects the
+# label as `ran_command`.
+CODEX_ANSWER_ITEMS = {"agent_message", "reasoning", "todo_list", "error"}
+
+# Codex features that give the model tools, turned off for every label run
+# (`codex features list` shows them on by default in codex-cli 0.164.0).
+# unified_exec stays on in 0.164.0 whatever is passed (--disable, or
+# -c features.unified_exec=false); the read-only sandbox and the
+# CODEX_ANSWER_ITEMS check cover it.
+CODEX_DISABLED_FEATURES = (
+    "shell_tool", "unified_exec", "view_image", "image_generation", "multi_agent", "plugins", "apps",
+    "hooks", "computer_use", "browser_use",
+)
 
 
 @cache
@@ -131,7 +146,10 @@ def codex_command(schema_file: Path, model: str | None = None, executable: str =
         "--output-schema", str(schema_file),
         "--json",
         "--color", "never",
+        "-c", 'web_search="disabled"',
     ]
+    for feature in CODEX_DISABLED_FEATURES:
+        command += ["--disable", feature]
     if model:
         command += ["-m", model]
     return command + ["-"]  # the prompt comes on stdin
@@ -163,7 +181,7 @@ def read_claude(stdout: str) -> Answer:
 
 def read_codex(stdout: str, model: str | None = None) -> Answer:
     """Codex's --json: one event per line. The last agent message is the
-    reply; any command, file change, MCP or web call rejects the label."""
+    reply; any item outside CODEX_ANSWER_ITEMS rejects the label."""
     answer = Answer(None, None, model=model)
     last_message = None
     used_tool = failed = False
@@ -177,7 +195,7 @@ def read_codex(stdout: str, model: str | None = None) -> Answer:
             continue
         kind = event.get("type", "")
         item = event.get("item") or {}
-        if kind.startswith("item.") and item.get("type") in CODEX_TOOL_ITEMS:
+        if kind.startswith("item.") and item.get("type") not in CODEX_ANSWER_ITEMS:
             used_tool = True
         if kind == "item.completed" and item.get("type") == "agent_message":
             last_message = item.get("text")
@@ -204,8 +222,9 @@ def command(teacher: str, system: str, model: str | None = None, executable: str
 
 
 def ask(teacher: str, transcript: str, terms: list[str] | tuple[str, ...] = (), model: str | None = None,
-        timeout: float = TIMEOUT_SECONDS) -> Answer:
+        timeout: float | None = None) -> Answer:
     """One contained teacher call."""
+    timeout = timeout or TIMEOUT_SECONDS
     system, user = messages(transcript, terms)
     executable = shutil.which(teacher)
     if executable is None:
@@ -213,18 +232,22 @@ def ask(teacher: str, transcript: str, terms: list[str] | tuple[str, ...] = (), 
     with tempfile.TemporaryDirectory(prefix=TEACHER_DIR_PREFIX) as folder:
         # Codex has no system-prompt flag, so both parts go in its prompt.
         stdin = user if teacher == "claude" else system + "\n\n" + user
+        # claude and codex are shims that start the real CLI as a child, so
+        # each call gets its own process group and a timeout kills all of it.
+        process = subprocess.Popen(command(teacher, system, model, executable), stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=folder,
+                                   start_new_session=True)
         try:
-            run = subprocess.run(command(teacher, system, model, executable), input=stdin, capture_output=True,
-                                 text=True, cwd=folder, timeout=timeout, check=False)
+            stdout, stderr = process.communicate(stdin, timeout=timeout)
         except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
             return Answer(None, "timeout", model=model, detail=f"no answer after {timeout:.0f} s")
-    if teacher == "claude":
-        answer = read_claude(run.stdout)
-    else:
-        answer = read_codex(run.stdout, model)
-    if run.returncode != 0 and answer.failure is None:
+    answer = read_claude(stdout) if teacher == "claude" else read_codex(stdout, model)
+    if process.returncode != 0 and answer.failure is None:
         answer.cleaned, answer.failure = None, "teacher_error"
     if answer.failure == "teacher_error":
-        lines = (run.stderr or "").strip().splitlines()
-        answer.detail = f"exit code {run.returncode}" + (f": {lines[-1][:200]}" if lines else "")
+        lines = (stderr or "").strip().splitlines()
+        answer.detail = f"exit code {process.returncode}" + (f": {lines[-1][:200]}" if lines else "")
     return answer

@@ -9,7 +9,7 @@ from irudd_voice import cli, teacher, vocab
 DICTIONARY = {
     "the", "a", "to", "and", "in", "of", "run", "fix", "open", "check", "please", "test", "file", "build",
     "app", "with", "then", "commit", "it", "on", "use", "code", "done", "next", "update", "see", "port", "at",
-    "ok", "is", "for",
+    "ok", "is", "for", "mail", "or", "token", "key", "blob", "keep",
 }
 
 
@@ -33,6 +33,8 @@ def make_logs(home: Path) -> None:
             # Not typed by the user: tool output, meta lines, subagents, system prompts.
             claude_user([{"type": "tool_result", "content": "toolresultword everywhere"}]),
             claude_user("metaword injected", isMeta=True),
+            claude_user("compactword summary", isCompactSummary=True),
+            claude_user("transcriptonlyword line", isVisibleInTranscriptOnly=True),
             claude_user("sidechainword prompt", isSidechain=True),
             claude_user("systemword notification", promptSource="system"),
             {"type": "assistant", "message": {"role": "assistant", "content": "assistantword reply"}},
@@ -100,6 +102,14 @@ def test_terms_in_a_message():
     found = vocab.terms_in("Done.Next run the v2 build on port 8080 at 10s; see T3 and e2e tests in "
                            "Packages/IruddVoiceKit, ok?", DICTIONARY)
     assert found == ["v2", "T3", "e2e", "Packages", "IruddVoiceKit"]
+
+
+def test_private_strings_are_never_terms():
+    text = ("mail someone@example.com or first.last@mail.example.org; token ghp_abcDEF1234567890 and "
+            "gho_xyz789, keys sk-proj-abc123 and xoxb-12-34-abc and AKIAIOSFODNN7EXAMPLE, blob "
+            "aB3dE5fG7hI9jK1lM3nO5pQ7 on api.internal.example.dev, myhost.tail1234.ts.net, example.com "
+            "and 192.168.1.20; keep hardchecks.py README.md Qwen3.5-2B mlx-lm getUserName")
+    assert vocab.terms_in(text, DICTIONARY) == ["hardchecks.py", "README.md", "Qwen3.5-2B", "mlx-lm", "getUserName"]
 
 
 def test_missing_sources_are_skipped(tmp_path):

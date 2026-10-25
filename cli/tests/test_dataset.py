@@ -1,5 +1,6 @@
 """`irudd-voice dataset build`: day splits, frozen test labels, mlx-lm files."""
 
+import hashlib
 import json
 from datetime import date, timedelta
 
@@ -122,6 +123,21 @@ def test_hash_is_stable_and_follows_the_content(app_db, tmp_path):
     assert hash_of("c") != hash_of("a")
 
 
+def test_vocabulary_hash_is_recorded(app_db, tmp_path):
+    record_days(app_db, days("2026-09-01", 3))
+    vocabulary = tmp_path / "vocabulary.json"
+    hashes = []
+    for terms in (["T3 Code"], ["T3 Code", "SwiftUI"]):
+        vocabulary.write_text(json.dumps({"version": 1, "generated_at": "x", "terms": terms}))
+        out = tmp_path / f"out{len(terms)}"
+        assert cli.main(["dataset", "build", "--db", str(app_db), "--out", str(out),
+                         "--vocabulary", str(vocabulary)]) == 0
+        summary = json.loads((out / "dataset.json").read_text())
+        assert summary["vocabulary_hash"] == hashlib.sha256("".join(t + "\n" for t in terms).encode()).hexdigest()
+        hashes.append(summary["vocabulary_hash"])
+    assert hashes[0] != hashes[1]
+
+
 def test_typed_variants_stay_in_their_split_and_test_gets_none(app_db, tmp_path):
     record_days(app_db, days("2026-09-01", 12))
     assert build(app_db, tmp_path / "plain") == 0
@@ -129,9 +145,12 @@ def test_typed_variants_stay_in_their_split_and_test_gets_none(app_db, tmp_path)
     day_split = splits(app_db)
     plain = {name: (tmp_path / "plain" / name).read_text() for name in dataset.FILES.values()}
     augmented = {name: (tmp_path / "aug" / name).read_text() for name in dataset.FILES.values()}
+    # Only train gets variants; selection and test stay real dictation.
     assert augmented["test.jsonl"] == plain["test.jsonl"]
+    assert augmented["valid.jsonl"] == plain["valid.jsonl"]
     summary = json.loads((tmp_path / "aug" / "dataset.json").read_text())
-    assert summary["augmented"]["test"] == 0 and summary["augmented"]["train"] > 0
+    assert summary["augmented"] == {"train": summary["augmented"]["train"], "selection": 0, "test": 0}
+    assert summary["augmented"]["train"] > 0
     for split, name in dataset.FILES.items():
         plain_lines = plain[name].splitlines()
         added = [l for l in augmented[name].splitlines() if l not in plain_lines]

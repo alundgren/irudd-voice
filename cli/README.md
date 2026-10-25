@@ -16,7 +16,7 @@ refuses to write to a database whose schema version it doesn't know.
 
 ```sh
 uv run irudd-voice vocab [--out PATH] [--dry-run]
-uv run irudd-voice label [--teacher claude|codex] [--model M] [--limit N] [--db PATH] [--dry-run]
+uv run irudd-voice label [--teacher claude|codex] [--model M] [--limit N] [--db PATH] [--retry-rejected] [--dry-run]
 uv run irudd-voice dataset build [--db PATH] [--out DIR] [--augment-typed]
 ```
 
@@ -26,9 +26,10 @@ uv run irudd-voice dataset build [--db PATH] [--out DIR] [--augment-typed]
 `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`), and
 keeps up to 200 project names, tool names and identifiers, most used first.
 It writes `~/Library/Application Support/irudd-voice/vocabulary.json`
-(`shared/vocabulary.schema.md`). Only terms are kept. Absolute paths, URLs,
-code blocks and your account name are left out. `--dry-run` prints counts
-only.
+(`shared/vocabulary.schema.md`). Only terms are kept. Code blocks, URLs,
+emails, things that look like keys or tokens, host names, IP addresses,
+absolute paths and your account name are left out. `--dry-run` prints
+counts only.
 
 **`label`** sends each transcribed thought without an accepted label to a
 teacher and stores the answer in `labels`. Only the transcript text and the
@@ -43,13 +44,20 @@ locked down:
   --system-prompt <teacher prompt> --json-schema <schema> --output-format json`
 - Codex: `codex exec --ephemeral --ignore-user-config -s read-only
   --skip-git-repo-check --output-schema shared/teacher-reply.schema.json
-  --json --color never -` (prompt on stdin)
+  --json --color never -c web_search="disabled" --disable shell_tool
+  --disable unified_exec --disable view_image --disable image_generation
+  --disable multi_agent --disable plugins --disable apps --disable hooks
+  --disable computer_use --disable browser_use -` (prompt on stdin).
+  In codex-cli 0.164.0 `unified_exec` stays on even when disabled; the
+  read-only sandbox and the item check below still apply.
 
 A label is rejected, with the reason stored, when the reply is malformed
-or empty, Codex ran a command or another tool, or the hard checks fail
+or empty, Codex's event stream has any item other than a message,
+reasoning, to-do list or error (`ran_command`), or the hard checks fail
 (`shared/README.md`, "Hard checks"). A call that fails (the CLI exits with
 an error or takes over 5 minutes) stores nothing, and `label` stops after 3
-failed calls in a row. `label --dry-run` shows the count and the command
+failed calls in a row. Thoughts already rejected under the current teacher
+prompt are skipped; `--retry-rejected` asks again. `label --dry-run` shows the count and the command
 without calling anything.
 
 **`dataset build`** gives every recording day a split (`dataset_days`):
@@ -59,7 +67,9 @@ its split forever, and labels on test days are frozen. It writes
 `train.jsonl`, `valid.jsonl` (selection) and `test.jsonl` in mlx-lm's chat
 format, plus `dataset.json` with the counts and `dataset_hash` (SHA-256 of
 the prompt version and the sorted `split<TAB>line` lines). Without `--out`
-it writes to a new temporary folder. `--augment-typed` adds, for each
-accepted label in train and selection, the label as typed input and a
-spoken-looking version (lowercase, no sentence punctuation, maybe a
-filler). Test gets no variants, so it measures real dictation only.
+it writes to a new temporary folder. `dataset.json` also records
+`vocabulary_hash` (SHA-256 of the terms used, one per line).
+`--augment-typed` adds, for each accepted label in train, the label as
+typed input and a spoken-looking version (lowercase, no sentence
+punctuation, maybe a filler). Selection and test get no variants, so they
+measure real dictation only.

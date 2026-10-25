@@ -137,13 +137,14 @@ def build(con, out: Path, terms: list[str], augment_typed: bool = False, now: st
     for chunk_id, raw_text, split, label, teacher_version in rows:
         teacher_versions.add(teacher_version)
         lines[split].append(example(raw_text, label, terms))
-        # The test split measures real dictation only, so it gets no variants.
-        if augment_typed and split != "test":
+        # Selection and test measure real dictation only, so only train gets variants.
+        if augment_typed and split == "train":
             for variant in typed_variants(chunk_id, raw_text, label, terms):
                 lines[split].append(example(variant, label, terms))
                 augmented[split] += 1
 
     cleanup_version = prompt.load()["version"]
+    used_terms = terms[: prompt.load()["vocabulary_limit"]]
     digest = hashlib.sha256(cleanup_version.encode() + b"\n")
     for line in sorted(f"{split}\t{line}" for split, split_lines in lines.items() for line in split_lines):
         digest.update(line.encode() + b"\n")
@@ -156,7 +157,9 @@ def build(con, out: Path, terms: list[str], augment_typed: bool = False, now: st
         "dataset_hash": digest.hexdigest(),
         "prompt_version": cleanup_version,
         "teacher_prompt_versions": sorted(teacher_versions),
-        "vocabulary_terms": len(terms[: prompt.load()["vocabulary_limit"]]),
+        "vocabulary_terms": len(used_terms),
+        # SHA-256 of the terms the prompts used, one per line in file order.
+        "vocabulary_hash": hashlib.sha256("".join(t + "\n" for t in used_terms).encode()).hexdigest(),
         "augment_typed": augment_typed,
         "built_at": now,
         "examples": {split: len(lines[split]) for split in FILES},
@@ -178,13 +181,15 @@ def register(commands) -> None:
     build_parser.add_argument("--vocabulary", type=Path, default=vocab.DEFAULT_PATH,
                               help=f"vocabulary file (default: {vocab.DEFAULT_PATH})")
     build_parser.add_argument("--augment-typed", action="store_true",
-                              help="add typed-prompt variants of accepted labels (train and selection only)")
+                              help="add typed-prompt variants of accepted labels (train only)")
     build_parser.set_defaults(run=run)
 
 
 def run(args) -> int:
+    # The top-level --db default may be None (resolved by each command).
+    path = getattr(args, "db", None) or db.DEFAULT_PATH
     try:
-        con = db.connect(args.db, write=True)
+        con = db.connect(path, write=True)
     except db.SchemaError as error:
         print(f"irudd-voice: {error}", file=sys.stderr)
         return 1

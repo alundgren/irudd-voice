@@ -1,13 +1,18 @@
 """`irudd-voice label` with fake teachers on PATH."""
 
+import argparse
 import json
+import os
+import signal
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
 from labeling import FakeTeachers, add_chunk, add_label, rows
 
-from irudd_voice import cli, prompt, teacher
+from irudd_voice import cli, dataset, db, prompt, teacher
+from irudd_voice import label as label_module
 
 SHARED = Path(__file__).resolve().parents[2] / "shared"
 CHECKS = json.loads((SHARED / "fixtures/hard-checks.json").read_text())
@@ -32,21 +37,29 @@ def labels(app_db):
         app_db, "SELECT c.raw_text, l.status, l.reject_reason FROM labels l JOIN chunks c ON c.id = l.chunk_id")}
 
 
-def test_shared_fixture_replies_are_accepted_or_rejected_exactly(app_db, fake, no_vocabulary, capsys):
+def expected_outcome(case):
+    if not case["cleaned"].strip():
+        return ("rejected", "empty")
+    if case["failures"]:
+        return ("rejected", ",".join(case["failures"]))
+    return ("accepted", None)
+
+
+def test_shared_fixture_replies_are_accepted_or_rejected_exactly(app_db, fake, no_vocabulary, tmp_path, capsys):
     """Every hard-check fixture (traps and corrections) and every reply-format
-    fixture becomes a chunk with a scripted teacher reply."""
+    fixture becomes a chunk with a scripted teacher reply. Cases with a
+    vocabulary are labeled in a later run with that vocabulary file."""
     expected = {}
+    by_vocabulary = {}
     for case in CHECKS["checks"]:
-        if case["vocabulary"] or case["transcript"] in expected:
+        if case["transcript"] in expected or any(case in group for group in by_vocabulary.values()):
+            continue
+        if case["vocabulary"]:
+            by_vocabulary.setdefault(tuple(case["vocabulary"]), []).append(case)
             continue
         add_chunk(app_db, case["transcript"])
         fake.reply(case["transcript"], case["cleaned"])
-        if not case["cleaned"].strip():
-            expected[case["transcript"]] = ("rejected", "empty")
-        elif case["failures"]:
-            expected[case["transcript"]] = ("rejected", ",".join(case["failures"]))
-        else:
-            expected[case["transcript"]] = ("accepted", None)
+        expected[case["transcript"]] = expected_outcome(case)
     for case in CHECKS["replies"]:
         transcript = f"reply format case {case['name']}"
         add_chunk(app_db, transcript)
@@ -60,6 +73,17 @@ def test_shared_fixture_replies_are_accepted_or_rejected_exactly(app_db, fake, n
     accepted = sum(1 for status, _ in expected.values() if status == "accepted")
     assert f"Labeled {len(expected)}: {accepted} accepted, {len(expected) - accepted} rejected" in summary
     assert "  malformed: " in summary and "  numbers: " in summary
+
+    assert by_vocabulary
+    for terms, cases in by_vocabulary.items():
+        vocabulary = tmp_path / "vocabulary.json"
+        vocabulary.write_text(json.dumps({"version": 1, "generated_at": "x", "terms": list(terms)}))
+        for case in cases:
+            add_chunk(app_db, case["transcript"])
+            fake.reply(case["transcript"], case["cleaned"])
+            expected[case["transcript"]] = expected_outcome(case)
+        assert label(app_db, vocabulary) == 0
+    assert labels(app_db) == expected
 
 
 @pytest.mark.parametrize(("transcript", "cleaned", "reason"), [
@@ -161,6 +185,86 @@ def test_codex_running_a_command_is_rejected(app_db, fake, no_vocabulary):
     assert labels(app_db) == {"list the files": ("rejected", "ran_command")}
 
 
+@pytest.mark.parametrize(("item_type", "status"), [
+    ("view_image", "rejected"), ("image_generation", "rejected"), ("some_future_tool", "rejected"),
+    ("reasoning", "accepted"), ("todo_list", "accepted"),
+])
+def test_codex_items_outside_the_allowlist_are_rejected(app_db, fake, no_vocabulary, item_type, status):
+    add_chunk(app_db, "list the files")
+    fake.reply("list the files", "List the files.", item_type=item_type)
+    assert label(app_db, no_vocabulary, "--teacher", "codex") == 0
+    assert labels(app_db) == {"list the files": (status, "ran_command" if status == "rejected" else None)}
+
+
+def test_rejected_thoughts_are_skipped_unless_retried(app_db, fake, no_vocabulary):
+    add_chunk(app_db, "run the tests")
+    fake.reply("run the tests", "Run all the integration tests.")
+    old = add_chunk(app_db, "rejected under an older prompt")
+    con = sqlite3.connect(app_db)
+    con.execute("INSERT INTO labels (chunk_id, status, reject_reason, teacher, teacher_prompt_version, created_at) "
+                "VALUES (?, 'rejected', 'numbers', 'claude', 'teacher-v0', 'x')", (old,))
+    con.commit()
+    con.close()
+    assert label(app_db, no_vocabulary) == 0
+    assert len(fake.calls()) == 2  # the older prompt's rejection is asked again
+    assert label(app_db, no_vocabulary) == 0
+    assert len(fake.calls()) == 2
+    fake.reply("run the tests", "Run the tests.")
+    assert label(app_db, no_vocabulary, "--retry-rejected") == 0
+    assert len(fake.calls()) == 3
+    assert ("accepted", None) in rows(app_db, "SELECT l.status, l.reject_reason FROM labels l JOIN chunks c "
+                                              "ON c.id = l.chunk_id WHERE c.raw_text = 'run the tests'")
+
+
+def test_a_hanging_teacher_is_killed_with_its_children(app_db, fake, no_vocabulary, tmp_path, monkeypatch):
+    pid_file = tmp_path / "child.pid"
+    add_chunk(app_db, "run the tests")
+    fake.reply("run the tests", hang=str(pid_file))
+    monkeypatch.setattr(teacher, "TIMEOUT_SECONDS", 2)
+    assert label(app_db, no_vocabulary) == 1
+    child = int(pid_file.read_text())
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(child, signal.SIGKILL)
+        pytest.fail("the teacher's child process outlived the timeout")
+    assert rows(app_db, "SELECT COUNT(*) FROM labels") == [(0,)]
+
+
+def test_a_chunk_deleted_mid_run_is_skipped(app_db, fake, no_vocabulary, capsys):
+    add_chunk(app_db, "delete me")
+    add_chunk(app_db, "keep me")
+    fake.reply("delete me", "Delete me.", delete_chunk=str(app_db))
+    assert label(app_db, no_vocabulary) == 0
+    assert labels(app_db) == {"keep me": ("accepted", None)}
+    assert "1 deleted meanwhile" in capsys.readouterr().out
+
+
+def test_default_database_without_db_flag(app_db, fake, no_vocabulary, monkeypatch, capsys):
+    """Works whether the top-level --db defaults to db.DEFAULT_PATH (this
+    branch) or to None (t3/py-models)."""
+    add_chunk(app_db, "run the tests")
+    monkeypatch.setattr(db, "DEFAULT_PATH", app_db)
+    assert cli.main(["label", "--dry-run", "--vocabulary", str(no_vocabulary)]) == 0
+    assert "Would label 1 thought(s)" in capsys.readouterr().out
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--db", type=Path, default=None)
+    commands = parser.add_subparsers(dest="command", required=True)
+    label_module.register(commands)
+    dataset.register(commands)
+    args = parser.parse_args(["label", "--vocabulary", str(no_vocabulary)])
+    assert args.db is None and args.run(args) == 0
+    assert rows(app_db, "SELECT status FROM labels") == [("accepted",)]
+    args = parser.parse_args(["dataset", "build", "--out", str(app_db.parent / "out"),
+                              "--vocabulary", str(no_vocabulary)])
+    assert args.db is None and args.run(args) == 0
+    assert rows(app_db, "SELECT COUNT(*) FROM dataset_days") == [(1,)]
+
+
 @pytest.mark.parametrize("name", teacher.TEACHERS)
 def test_teachers_run_contained_and_see_only_text(app_db, fake, no_vocabulary, name):
     add_chunk(app_db, "check the {rule} placeholder in prompt.py")
@@ -174,6 +278,7 @@ def test_teachers_run_contained_and_see_only_text(app_db, fake, no_vocabulary, n
         assert json.loads(argv[argv.index("--settings") + 1]) == {"disableAllHooks": True}
         assert argv[argv.index("--output-format") + 1] == "json"
         assert json.loads(argv[argv.index("--json-schema") + 1])["required"] == ["cleaned"]
+        assert "--safe-mode" in argv
         assert "--bare" not in argv
         assert argv[argv.index("--system-prompt") + 1] == teacher.messages("x")[0]
     else:
@@ -181,6 +286,11 @@ def test_teachers_run_contained_and_see_only_text(app_db, fake, no_vocabulary, n
         for flag in ("--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--json"):
             assert flag in argv
         assert argv[argv.index("-s") + 1] == "read-only"
+        assert argv[argv.index("-c") + 1] == 'web_search="disabled"'
+        disabled = {argv[i + 1] for i, flag in enumerate(argv) if flag == "--disable"}
+        assert disabled == {"shell_tool", "unified_exec", "view_image", "image_generation", "multi_agent",
+                            "plugins", "apps", "hooks", "computer_use", "browser_use"}
+        assert argv[-1] == "-"
         assert Path(argv[argv.index("--output-schema") + 1]) == SHARED / "teacher-reply.schema.json"
     # A fresh empty folder, removed afterwards.
     assert Path(call["cwd"]).name.startswith(teacher.TEACHER_DIR_PREFIX)
@@ -202,10 +312,10 @@ def test_skips_labeled_discarded_and_empty_and_honours_limit(app_db, fake, no_vo
     add_label(app_db, retried, None, status="rejected")
     first = add_chunk(app_db, "first new one")
     second = add_chunk(app_db, "second new one")
-    assert label(app_db, no_vocabulary, "--limit", "2") == 0
+    assert label(app_db, no_vocabulary, "--limit", "2", "--retry-rejected") == 0
     # Never-tried chunks come before ones that were rejected before.
     assert rows(app_db, "SELECT chunk_id FROM labels WHERE id > 2 ORDER BY id") == [(first,), (second,)]
-    assert label(app_db, no_vocabulary) == 0
+    assert label(app_db, no_vocabulary, "--retry-rejected") == 0
     assert len(fake.calls()) == 3
     assert label(app_db, no_vocabulary) == 0
     assert len(fake.calls()) == 3

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import sqlite3
 import sys
 from collections import Counter
 from datetime import UTC, datetime
@@ -29,18 +30,25 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def pending_chunks(con, limit: int | None) -> list[tuple[int, str, str]]:
+def pending_chunks(con, limit: int | None, retry_rejected: bool = False) -> list[tuple[int, str, str]]:
     """(id, raw_text, local_day) of transcribed chunks without an accepted
-    label. Chunks never tried come first, then by age."""
+    label. Chunks already rejected under the current teacher prompt are
+    left out unless `retry_rejected`. Chunks never tried come first, then
+    by age."""
     sql = (
         "SELECT c.id, c.raw_text, c.local_day FROM chunks c "
         "WHERE c.status = 'transcribed' AND TRIM(COALESCE(c.raw_text, '')) != '' "
         "AND NOT EXISTS (SELECT 1 FROM labels l WHERE l.chunk_id = c.id AND l.status = 'accepted') "
-        "ORDER BY (SELECT COUNT(*) FROM labels l WHERE l.chunk_id = c.id), c.id"
     )
+    params: list = []
+    if not retry_rejected:
+        sql += ("AND NOT EXISTS (SELECT 1 FROM labels l WHERE l.chunk_id = c.id AND l.status = 'rejected' "
+                "AND l.teacher_prompt_version = ?) ")
+        params.append(teacher.load()["version"])
+    sql += "ORDER BY (SELECT COUNT(*) FROM labels l WHERE l.chunk_id = c.id), c.id"
     if limit is not None:
         sql += f" LIMIT {int(limit)}"
-    return con.execute(sql).fetchall()
+    return con.execute(sql, params).fetchall()
 
 
 def judge(transcript: str, answer: teacher.Answer, terms: list[str]) -> tuple[str, str | None]:
@@ -57,7 +65,18 @@ def judge(transcript: str, answer: teacher.Answer, terms: list[str]) -> tuple[st
 
 
 def store(con, chunk_id: int, day: str, answer: teacher.Answer, status: str, reason: str | None,
-          teacher_name: str) -> None:
+          teacher_name: str) -> bool:
+    """Inserts the label. False when the chunk was deleted meanwhile (for
+    example by Settings → Data → Delete All Recordings)."""
+    try:
+        _insert(con, chunk_id, day, answer, status, reason, teacher_name)
+    except sqlite3.IntegrityError:
+        return False
+    return True
+
+
+def _insert(con, chunk_id: int, day: str, answer: teacher.Answer, status: str, reason: str | None,
+            teacher_name: str) -> None:
     with db.write_transaction(con):
         # A label on a test day is frozen from the start (dataset.py).
         frozen = con.execute("SELECT COUNT(*) FROM dataset_days WHERE local_day = ? AND split = 'test'",
@@ -79,19 +98,23 @@ def register(commands) -> None:
     parser.add_argument("--vocabulary", type=Path, default=vocab.DEFAULT_PATH,
                         help=f"vocabulary file (default: {vocab.DEFAULT_PATH})")
     parser.add_argument("--db", type=Path, default=argparse.SUPPRESS, help="database file (default: the app's)")
+    parser.add_argument("--retry-rejected", action="store_true",
+                        help="also ask again for thoughts rejected under the current teacher prompt")
     parser.add_argument("--dry-run", action="store_true", help="show what would be sent; call no teacher")
     parser.set_defaults(run=run)
 
 
 def run(args) -> int:
     terms = vocab.load_terms(args.vocabulary)
+    # The top-level --db default may be None (resolved by each command).
+    path = getattr(args, "db", None) or db.DEFAULT_PATH
     try:
-        con = db.connect(args.db, write=not args.dry_run)
+        con = db.connect(path, write=not args.dry_run)
     except db.SchemaError as error:
         print(f"irudd-voice: {error}", file=sys.stderr)
         return 1
     with con:
-        chunks = pending_chunks(con, args.limit)
+        chunks = pending_chunks(con, args.limit, args.retry_rejected)
         if args.dry_run:
             print(f"Would label {len(chunks)} thought(s) with {args.teacher} "
                   f"(teacher prompt {teacher.load()['version']}, {len(terms)} vocabulary terms).")
@@ -99,7 +122,8 @@ def run(args) -> int:
             print("  " + shlex.join(teacher.command(args.teacher, "<teacher system prompt>", args.model)))
             return 0
         if not chunks:
-            print("Nothing to label: every transcribed thought has an accepted label.")
+            print("Nothing to label: every transcribed thought has an accepted label"
+                  + ("." if args.retry_rejected else " or was rejected (--retry-rejected asks again)."))
             return 0
         counts: Counter = Counter()
         reasons: Counter = Counter()
@@ -124,13 +148,17 @@ def run(args) -> int:
                 continue
             failed_in_a_row = 0
             status, reason = judge(transcript, answer, terms)
-            store(con, chunk_id, day, answer, status, reason, args.teacher)
+            if not store(con, chunk_id, day, answer, status, reason, args.teacher):
+                counts["deleted"] += 1
+                print(f"[{index}/{len(chunks)}] #{chunk_id} deleted meanwhile; skipped")
+                continue
             counts[status] += 1
             if reason:
                 reasons.update(reason.split(","))
             print(f"[{index}/{len(chunks)}] #{chunk_id} {status}{f' ({reason})' if reason else ''}")
     print(f"Labeled {counts['accepted'] + counts['rejected']}: {counts['accepted']} accepted, "
-          f"{counts['rejected']} rejected" + (f"; {counts['failed']} call(s) failed" if counts["failed"] else ""))
+          f"{counts['rejected']} rejected" + (f"; {counts['failed']} call(s) failed" if counts["failed"] else "")
+          + (f"; {counts['deleted']} deleted meanwhile" if counts["deleted"] else ""))
     for reason, n in sorted(reasons.items(), key=lambda r: (-r[1], r[0])):
         print(f"  {reason}: {n}")
     if cost:
