@@ -45,8 +45,10 @@ struct PanelView: View {
             Divider()
 
             Section {
-                Text("No mic picked yet.")
-                    .foregroundStyle(.secondary)
+                PanelMicList()
+                if case .failed(let message) = model.micState {
+                    Text(message).font(.caption).foregroundStyle(.red)
+                }
             } header: {
                 Text("Microphone").font(.subheadline.weight(.semibold))
             }
@@ -64,8 +66,16 @@ struct PanelView: View {
             }
 
             Section {
-                Text("Nothing dictated yet.")
-                    .foregroundStyle(.secondary)
+                if let last = model.lastThought {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(last.duration, format: .number.precision(.fractionLength(1))) s of audio, ended by \(last.endReason.description)")
+                        Text("\(last.endedAt, style: .relative) ago · not saved yet (saving comes next)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("Nothing dictated yet.")
+                        .foregroundStyle(.secondary)
+                }
             } header: {
                 Text("Last dictation").font(.subheadline.weight(.semibold))
             }

@@ -6,9 +6,7 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             Tab("General", systemImage: "gearshape") { GeneralSettings() }
-            Tab("Hotkeys", systemImage: "keyboard") {
-                LaterPane(text: "No hotkey is set. A start/stop hotkey arrives with mic capture.")
-            }
+            Tab("Hotkeys", systemImage: "keyboard") { HotkeySettings() }
             Tab("Model", systemImage: "cpu") {
                 LaterPane(text: "The cleanup model arrives in a later version. Until then you get Apple's raw text.")
             }
@@ -19,7 +17,7 @@ struct SettingsView: View {
                 LaterPane(text: "Update now arrives with self-update. For now, run install.sh again.")
             }
         }
-        .frame(width: 460, height: 260)
+        .frame(width: 480, height: 380)
     }
 }
 
@@ -30,6 +28,9 @@ private struct GeneralSettings: View {
         @Bindable var model = model
 
         Form {
+            Section("Microphone") {
+                MicPicker().labelsHidden()
+            }
             Toggle("Listening", isOn: $model.isOn)
             Toggle("Start at login", isOn: Binding(
                 get: { model.startAtLogin == .enabled || model.startAtLogin == .requiresApproval },
@@ -60,5 +61,21 @@ private struct LaterPane: View {
             .multilineTextAlignment(.center)
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct HotkeySettings: View {
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Start/stop thought") {
+                    HotkeyRecorder()
+                }
+            } footer: {
+                Text("Starts a thought, or ends the one in progress. Useful for mics without a mute button, like AirPods. A thought started with the hotkey also ends after 5 seconds of silence.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }

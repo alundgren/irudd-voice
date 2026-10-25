@@ -39,9 +39,11 @@ public enum PermissionState: Sendable, Equatable {
 /// What first-run setup still needs.
 public struct SetupChecklist: Sendable, Equatable {
     public var permissions: [Permission: PermissionState]
+    public var micPicked: Bool
 
-    public init(permissions: [Permission: PermissionState]) {
+    public init(permissions: [Permission: PermissionState], micPicked: Bool = false) {
         self.permissions = permissions
+        self.micPicked = micPicked
     }
 
     public func state(of permission: Permission) -> PermissionState {
@@ -54,6 +56,6 @@ public struct SetupChecklist: Sendable, Equatable {
     }
 
     public var canFinish: Bool {
-        missingRequired.isEmpty
+        missingRequired.isEmpty && micPicked
     }
 }

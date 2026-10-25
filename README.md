@@ -6,9 +6,10 @@ is. Speech recognition and text cleanup run on your Mac. Everything you say
 is kept in one SQLite file, so the cleanup model can later be trained on
 your own voice and words.
 
-**Status:** early. This version has the menu-bar app, first-run setup and
-the installer. Mic capture, recording, pasting, cleanup and training come
-next.
+**Status:** early. This version has the menu-bar app, first-run setup, the
+installer and mic capture (pick a mic, the mute button or a hotkey starts
+and ends a thought). Saving, speech-to-text, pasting, cleanup and training
+come next.
 
 ## What you need
 

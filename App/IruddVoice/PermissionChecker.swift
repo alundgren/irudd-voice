@@ -11,17 +11,23 @@ import Speech
 final class PermissionChecker {
     private(set) var checklist = SetupChecklist(permissions: [:])
 
+    /// Set by the app model when a mic is picked.
+    var micPicked = false {
+        didSet { refresh() }
+    }
+
     init() {
         refresh()
     }
 
     func refresh() {
-        checklist = SetupChecklist(permissions: [
+        let next = SetupChecklist(permissions: [
             .microphone: microphone(),
             .speechRecognition: speech(),
             .accessibility: AXIsProcessTrusted() ? .granted : .notAsked,
             .clipboard: clipboard(),
-        ])
+        ], micPicked: micPicked)
+        if next != checklist { checklist = next }
     }
 
     func request(_ permission: Permission) {

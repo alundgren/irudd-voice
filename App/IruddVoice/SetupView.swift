@@ -31,15 +31,23 @@ struct SetupView: View {
             }
 
             GroupBox("2. Microphone") {
-                Text("Picking a mic arrives with mic capture.")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Pick the mic to listen to. The app only ever uses this one. If it's unplugged, the app waits for it.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    MicPicker().labelsHidden()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
             }
 
             HStack {
-                if !checklist.canFinish {
+                if !checklist.missingRequired.isEmpty {
                     Text("Allow \(checklist.missingRequired.map(\.title).formatted(.list(type: .and))) to finish.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if !checklist.micPicked {
+                    Text("Pick a mic to finish.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -58,7 +66,7 @@ struct SetupView: View {
             // Accessibility and clipboard are changed in System Settings, which
             // sends no notification, so the list re-reads them while it's open.
             while !Task.isCancelled {
-                model.permissions.refresh()
+                model.refresh()
                 try? await Task.sleep(for: .seconds(1))
             }
         }

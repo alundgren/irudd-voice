@@ -40,6 +40,9 @@ public final class Preferences {
         static let isOn = "isOn"
         static let previewMode = "previewMode"
         static let hasCompletedSetup = "hasCompletedSetup"
+        static let pinnedMicUID = "pinnedMicUID"
+        static let pinnedMicName = "pinnedMicName"
+        static let hotkey = "hotkey"
     }
 
     private let store: KeyValueStore
@@ -62,5 +65,26 @@ public final class Preferences {
     public var hasCompletedSetup: Bool {
         get { store.object(forKey: Key.hasCompletedSetup) as? Bool ?? false }
         set { store.set(newValue, forKey: Key.hasCompletedSetup) }
+    }
+
+    /// The exact device UID of the mic the app listens to. Only changed when
+    /// the person picks a mic, never automatically.
+    public var pinnedMicUID: String? {
+        get { store.object(forKey: Key.pinnedMicUID) as? String }
+        set { store.set(newValue, forKey: Key.pinnedMicUID) }
+    }
+
+    /// The pinned mic's name, to show while it's unplugged.
+    public var pinnedMicName: String? {
+        get { store.object(forKey: Key.pinnedMicName) as? String }
+        set { store.set(newValue, forKey: Key.pinnedMicName) }
+    }
+
+    /// The start/stop hotkey. None by default.
+    public var hotkey: Hotkey? {
+        get {
+            (store.object(forKey: Key.hotkey) as? Data).flatMap { try? JSONDecoder().decode(Hotkey.self, from: $0) }
+        }
+        set { store.set(newValue.flatMap { try? JSONEncoder().encode($0) }, forKey: Key.hotkey) }
     }
 }

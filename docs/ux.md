@@ -48,7 +48,24 @@ default), **Dot** (a small dot while hearing you) and **Transcript**
 ## Picking a mic
 
 The mic list is in the panel and in Settings → General, since that's
-where people look first. Picking a mic is the second step of setup.
+where people look first. Picking a mic is the second step of setup. The
+pinned mic has a checkmark and a small level bar while the app hears it.
+If it's unplugged it stays in the list as "not connected", and the app
+waits for that exact mic.
+
+## Starting and ending a thought
+
+- **Mute button** (mics that go silent when muted, like the BOYA):
+  unmuting starts a thought, muting ends it. Pausing to think doesn't end
+  it.
+- **Hotkey** (Settings → Hotkeys, none by default): starts a thought or
+  ends the current one. Meant for mics without a mute button, like
+  AirPods. A thought started this way also ends after 5 seconds of
+  silence.
+- Every thought keeps the 2 seconds before it started, so the first word
+  isn't cut off.
+- Unplugging the mic, switching mics or switching the app off ends the
+  thought and keeps what was heard.
 
 ## Rules the app never breaks
 
