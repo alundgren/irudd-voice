@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Model parity: the app's Swift model code (Packages/CleanupModel) must give
-# exactly the tokens Python mlx-lm gives, greedy, for the inputs in
+# the tokens Python mlx-lm gives, greedy, for the inputs in
 # evals/parity.jsonl. Prints OK, or the first differing token (index, both
 # IDs, decoded text) for each input that differs.
 #
@@ -10,11 +10,15 @@
 # docs/models/parity-format.md). Loads real models: hold the heavy-job lock
 # when running it on a shared Mac. Set VOICE_MODEL_TOOL to skip the build.
 #
-# The exit code is the strict result: identical tokens. When a model differs
-# and a Python with mlx-lm is available (PARITY_PYTHON, or the CLI's `ml`
-# group), tests/parity-gaps.py also prints the tie-aware result: identical
-# prompts, and every differing token within a logit gap of PARITY_MAX_GAP
-# (default 0.5) in Python's own logits.
+# A model passes when its tokens are identical, or when the tie-aware rule
+# accepted by the project owner holds (tests/parity-gaps.py): identical prompt
+# tokens, and at every difference Swift's token is among Python's top 3
+# choices within a logit gap of PARITY_MAX_GAP (default 0.5) of Python's
+# first choice, in Python's own logits.
+# Differences come from MLX version and rounding (the app's mlx-swift bundles
+# MLX core 0.32.2, the CLI uses 0.32.4). The tie-aware check needs a Python
+# with mlx-lm (PARITY_PYTHON, or the CLI's `ml` group); without one, a
+# difference fails.
 set -euo pipefail
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 INPUTS=${PARITY_INPUTS:-$REPO_DIR/evals/parity.jsonl}
@@ -56,12 +60,12 @@ while [ $# -gt 0 ]; do
     continue
   fi
   if ! "$tool" compare --reference "$reference" --swift "$work/$name.json" --model "$model"; then
-    failed=1
     if [ ${#python_cmd[@]} -gt 0 ]; then
       "${python_cmd[@]}" -I "$REPO_DIR/tests/parity-gaps.py" "$model" "$reference" "$work/$name.json" \
-        --max-gap "${PARITY_MAX_GAP:-0.5}" || true
+        --max-gap "${PARITY_MAX_GAP:-0.5}" || failed=1
     else
-      echo "tie-aware: skipped (no Python with mlx-lm; set PARITY_PYTHON)"
+      echo "tie-aware: not checked (no Python with mlx-lm; set PARITY_PYTHON); counting as a failure"
+      failed=1
     fi
   fi
 done
