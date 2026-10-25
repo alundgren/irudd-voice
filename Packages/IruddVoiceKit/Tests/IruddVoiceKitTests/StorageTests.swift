@@ -196,3 +196,53 @@ final class OSAllocatedUnfairLockBox<T: Sendable>: @unchecked Sendable {
     func set(_ newValue: T) { lock.withLock { value = newValue } }
     func get() -> T { lock.withLock { value } }
 }
+
+struct MigrationTests {
+    let v2 = "ALTER TABLE app_state ADD COLUMN note TEXT"
+
+    func databaseWithAThought() async throws -> String {
+        let path = temporaryDatabasePath()
+        let recorder = ChunkRecorder(store: try ChunkStore(path: path))
+        let captured = thought(seconds: 1)
+        _ = await recorder.record(captured, meta: meta(for: captured), transcription: nil)
+        return path
+    }
+
+    @Test func backsUpBeforeChangingASchemaWithData() async throws {
+        let path = try await databaseWithAThought()
+        let db = try Database(path: path)
+        var steps: [Schema.MigrationStep] = []
+        try Schema.migrate(db, migrations: [Schema.v1, v2], freeSpace: { _ in 10_000_000_000 }, progress: { steps.append($0) })
+        #expect(try db.userVersion == 2)
+
+        guard case .backingUp(let backupPath, _) = steps.first else {
+            Issue.record("no backup step: \(steps)")
+            return
+        }
+        #expect(steps.last == .migrating(from: 1, to: 2))
+        let backup = try Database(path: backupPath)
+        #expect(try backup.userVersion == 1)
+        #expect(try backup.query("SELECT COUNT(*) FROM chunks").first?.first?.int == 1)
+        #expect(try backup.query("PRAGMA integrity_check").first?.first?.text == "ok")
+    }
+
+    @Test func notEnoughSpaceChangesNothing() async throws {
+        let path = try await databaseWithAThought()
+        let db = try Database(path: path)
+        #expect(throws: DatabaseError.self) {
+            try Schema.migrate(db, migrations: [Schema.v1, v2], freeSpace: { _ in 1_000 })
+        }
+        #expect(try db.userVersion == 1)
+        let folder = ((path as NSString).deletingLastPathComponent as NSString).appendingPathComponent("backups")
+        #expect(!FileManager.default.fileExists(atPath: folder))
+    }
+
+    @Test func aNewDatabaseNeedsNoBackup() throws {
+        let path = temporaryDatabasePath()
+        try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                                withIntermediateDirectories: true)
+        var steps: [Schema.MigrationStep] = []
+        try Schema.migrate(try Database(path: path), freeSpace: { _ in 0 }, progress: { steps.append($0) })
+        #expect(steps == [.migrating(from: 0, to: 1)])
+    }
+}

@@ -82,6 +82,16 @@ final class AppModel {
         }
     }
 
+    // MARK: Updates
+
+    private(set) var updateState: UpdateState = .unknown
+    let updater = Updater(
+        stateDir: (Schema.defaultPath as NSString).deletingLastPathComponent,
+        cachesDir: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("irudd-voice").path,
+        runner: ProcessRunner())
+    var installInfo: InstallInfo? { updater.installInfo() }
+
     private(set) var startAtLogin: SMAppService.Status = SMAppService.mainApp.status
     var loginItemError: String?
 
@@ -135,6 +145,11 @@ final class AppModel {
         Task {
             await refreshDatabaseInfo()
             await checkSpeechFiles()
+        }
+        // Check for updates once a little after launch; building waits for Update Now.
+        Task {
+            try? await Task.sleep(for: .seconds(15))
+            if updater.installInfo() != nil { await checkForUpdates() }
         }
     }
 
@@ -485,6 +500,64 @@ final class AppModel {
         hotkeyCenter.register(hotkeys[action], for: action)
     }
 
+    // MARK: Updates
+
+    func checkForUpdates() async {
+        if case .building = updateState { return }
+        updateState = .checking
+        updateState = await updater.check()
+        log(.info, "update", "Check: \(Self.describe(updateState))")
+    }
+
+    /// Builds the update in a staging folder. The installed app keeps
+    /// working; nothing changes until Restart to Update.
+    func updateNow() {
+        guard case .available(let commit, _, _) = updateState else { return }
+        updateState = .building(commit: commit)
+        log(.info, "update", "Building \(commit.prefix(7))")
+        Task {
+            updateState = await updater.build()
+            log(updateState.isFailure ? .error : .info, "update", "Build: \(Self.describe(updateState))")
+        }
+    }
+
+    /// Hands over to install.sh --activate, which waits for this app to
+    /// quit, swaps the new one in whole, and opens it.
+    func restartToUpdate() {
+        guard case .ready(_, let stageDir) = updateState else { return }
+        let command = updater.restartCommand(stageDir: stageDir, pid: ProcessInfo.processInfo.processIdentifier)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: command.executable)
+        process.arguments = command.arguments
+        process.environment = command.environment
+        let logURL = URL(fileURLWithPath: updater.logPath).deletingLastPathComponent().appendingPathComponent("activate.log")
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        if let handle = try? FileHandle(forWritingTo: logURL) {
+            process.standardOutput = handle
+            process.standardError = handle
+        }
+        do {
+            try process.run()
+            log(.info, "update", "Restarting into \(stageDir)")
+            NSApp.terminate(nil)
+        } catch {
+            updateState = .failed("Couldn't start the update: \(error)", log: nil)
+        }
+    }
+
+    private static func describe(_ state: UpdateState) -> String {
+        switch state {
+        case .unknown: "not checked"
+        case .checking: "checking"
+        case .upToDate(let commit): "up to date at \(commit.prefix(7))"
+        case .notOnBranch(let reason): reason
+        case .available(let commit, let changes, _): "\(changes) change(s) up to \(commit.prefix(7))"
+        case .building(let commit): "building \(commit.prefix(7))"
+        case .ready(let commit, _): "ready: \(commit.prefix(7))"
+        case .failed(let message, _): message
+        }
+    }
+
     // MARK: Login item and setup
 
     func refreshLoginItem() {
@@ -542,4 +615,11 @@ enum SpeechFilesState: Equatable {
     case downloading(Double)
     case installed
     case failed(String)
+}
+
+extension UpdateState {
+    var isFailure: Bool {
+        if case .failed = self { return true }
+        return false
+    }
 }

@@ -4,7 +4,6 @@ import Foundation
 /// changes the schema; the CLI checks `PRAGMA user_version` and refuses to
 /// write to a version it doesn't know. See docs/database.md.
 public enum Schema {
-    public static let currentVersion = 1
 
     public static var defaultPath: String {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -21,17 +20,69 @@ public enum Schema {
         return db
     }
 
-    public static func migrate(_ db: Database) throws {
+    /// Migration SQL, in order: index 0 takes version 0 to 1, and so on.
+    public static let migrations = [v1]
+    public static var currentVersion: Int { migrations.count }
+
+    /// Brings the database up to the newest schema. Before changing a
+    /// database that already has data, it writes a full copy with VACUUM
+    /// INTO to `backups/` next to it, after checking there's room. If there
+    /// isn't, it stops before changing anything.
+    public static func migrate(
+        _ db: Database,
+        migrations: [String] = migrations,
+        freeSpace: (String) -> Int64? = Schema.freeSpace,
+        progress: (MigrationStep) -> Void = { _ in }
+    ) throws {
+        let target = migrations.count
+        let version = try db.userVersion
+        if version > target {
+            throw DatabaseError(message:
+                "The database is schema version \(version), but this app only knows up to \(target). Update irudd-voice.")
+        }
+        guard version < target else { return }
+
+        if version > 0 {
+            let folder = ((db.path as NSString).deletingLastPathComponent as NSString).appendingPathComponent("backups")
+            let size = Self.sizeOnDisk(db.path)
+            let needed = size * 2 + 50_000_000
+            if let free = freeSpace(folder.isEmpty ? db.path : (db.path as NSString).deletingLastPathComponent),
+               free < needed {
+                throw DatabaseError(message: """
+                    Updating the database needs \(needed / 1_000_000) MB free for a backup first, but only \
+                    \(free / 1_000_000) MB is free. Nothing was changed. Free up some space and start the app again.
+                    """)
+            }
+            try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+            let stamp = Timestamps.string(Date()).replacingOccurrences(of: ":", with: "-")
+            let backup = (folder as NSString).appendingPathComponent("voice-v\(version)-\(stamp).sqlite")
+            progress(.backingUp(path: backup, bytes: size))
+            try db.query("VACUUM INTO ?", [.text(backup)])
+        }
+
         try db.transaction {
-            let version = try db.userVersion
-            if version > currentVersion {
-                throw DatabaseError(message:
-                    "The database is schema version \(version), but this app only knows up to \(currentVersion). Update irudd-voice.")
+            for next in version..<target {
+                progress(.migrating(from: next, to: next + 1))
+                try db.execute(migrations[next])
+                try db.execute("PRAGMA user_version = \(next + 1)")
             }
-            if version < 1 {
-                try db.execute(v1)
-                try db.execute("PRAGMA user_version = 1")
-            }
+        }
+    }
+
+    public enum MigrationStep: Equatable {
+        case backingUp(path: String, bytes: Int64)
+        case migrating(from: Int, to: Int)
+    }
+
+    public static func freeSpace(_ folder: String) -> Int64? {
+        let url = URL(fileURLWithPath: folder)
+        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage
+    }
+
+    static func sizeOnDisk(_ path: String) -> Int64 {
+        [path, path + "-wal"].reduce(0) { total, file in
+            total + ((try? FileManager.default.attributesOfItem(atPath: file)[.size] as? NSNumber)?.int64Value ?? 0)
         }
     }
 

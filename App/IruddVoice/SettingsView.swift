@@ -11,9 +11,7 @@ struct SettingsView: View {
                 LaterPane(text: "The cleanup model arrives in a later version. Until then you get Apple's raw text.")
             }
             Tab("Data", systemImage: "internaldrive") { DataSettings() }
-            Tab("Updates", systemImage: "arrow.down.circle") {
-                LaterPane(text: "Update now arrives with self-update. For now, run install.sh again.")
-            }
+            Tab("Updates", systemImage: "arrow.down.circle") { UpdateSettings() }
         }
         .frame(width: 480, height: 380)
     }
@@ -139,5 +137,84 @@ private struct GrowthBars: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(total.formatted(.byteCount(style: .file))) added in the last 7 days")
+    }
+}
+
+private struct UpdateSettings: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        Form {
+            Section {
+                if let info = model.installInfo {
+                    LabeledContent("Installed") {
+                        Text("\(info.shortCommit) on \(info.branch)\(info.dirty ? " (with local changes)" : "")")
+                            .font(.body.monospaced())
+                    }
+                } else {
+                    Text("This app wasn't installed with install.sh, so it can't update itself.")
+                        .foregroundStyle(.secondary)
+                }
+                UpdateStatus()
+            } footer: {
+                Text("Updates are built on this Mac from the source on GitHub, signed with your certificate, and swapped in whole when you restart. If a build fails, the installed app stays as it is.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+/// Update status and the button for the next step. Used in Settings and the panel.
+struct UpdateStatus: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        switch model.updateState {
+        case .unknown, .upToDate, .notOnBranch, .failed:
+            VStack(alignment: .leading, spacing: 6) {
+                switch model.updateState {
+                case .upToDate:
+                    Label("Up to date", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                case .notOnBranch(let reason):
+                    Text(reason).font(.callout).foregroundStyle(.secondary)
+                case .failed(let message, let log):
+                    Text(message).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                    if let log {
+                        Button("Show Build Log") {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: log)])
+                        }
+                    }
+                default:
+                    EmptyView()
+                }
+                Button("Check for Updates") { Task { await model.checkForUpdates() } }
+                    .disabled(model.installInfo == nil)
+            }
+        case .checking:
+            HStack {
+                ProgressView().controlSize(.small)
+                Text("Checking…").foregroundStyle(.secondary)
+            }
+        case .available(_, let changes, let summaries):
+            VStack(alignment: .leading, spacing: 6) {
+                Text("\(changes) new change\(changes == 1 ? "" : "s")").font(.headline)
+                ForEach(summaries, id: \.self) { Text("• \($0)").font(.callout).lineLimit(1) }
+                Button("Update Now") { model.updateNow() }
+                    .buttonStyle(.borderedProminent)
+            }
+        case .building(let commit):
+            HStack {
+                ProgressView().controlSize(.small)
+                Text("Building \(commit.prefix(7))… This takes a few minutes. You can keep dictating.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        case .ready:
+            VStack(alignment: .leading, spacing: 6) {
+                Text("The update is built and ready.").font(.headline)
+                Button("Restart to Update") { model.restartToUpdate() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
     }
 }

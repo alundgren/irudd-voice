@@ -84,6 +84,15 @@ struct PanelView: View {
                 Text("Last dictation").font(.subheadline.weight(.semibold))
             }
 
+            switch model.updateState {
+            case .available, .building, .ready:
+                UpdateStatus()
+                    .padding(10)
+                    .background(.blue.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+            default:
+                EmptyView()
+            }
+
             if let error = model.databaseError {
                 Text(error).font(.caption).foregroundStyle(.red)
             }

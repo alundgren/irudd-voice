@@ -85,13 +85,15 @@ EOF2
 passed=0
 fail() { echo "FAIL [$case_name]: $*" >&2; echo "--- output ---" >&2; cat "$work/out" >&2; exit 1; }
 
-# run NAME EXPECTED_EXIT EXPECTED_TEXT [VAR=value…] [--install-option…]
+# run NAME EXPECTED_EXIT EXPECTED_TEXT [VAR=value…] [-- install.sh arguments…]
 run() {
   case_name=$1 expected_exit=$2 expected_text=$3
   shift 3
-  local vars=() opts=() arg
+  local vars=() opts=() seen_separator=0 arg
   for arg in "$@"; do
-    if [[ "$arg" == --* ]]; then opts+=("$arg"); else vars+=("$arg"); fi
+    if (( seen_separator )); then opts+=("$arg")
+    elif [[ "$arg" == -- ]]; then seen_separator=1
+    else vars+=("$arg"); fi
   done
   local apps="$work/$case_name/Applications" state="$work/$case_name/state"
   mkdir -p "$apps/irudd-voice.app/Contents/MacOS" "$state"
@@ -104,6 +106,7 @@ run() {
     FAKE_STATE="$state" FAKE_SHA1="$SHA1" \
     IRUDD_VOICE_APPS_DIR="$apps" IRUDD_VOICE_BUILD_DIR="$work/$case_name/build" \
     IRUDD_VOICE_LSREGISTER="$fakes/lsregister" \
+    IRUDD_VOICE_STATE_DIR="$work/$case_name/state-dir" \
     ${vars[@]+"${vars[@]}"} bash "$REPO_DIR/install.sh" ${opts[@]+"${opts[@]}"} >"$work/out" 2>&1
   local code=$?
   set -e
@@ -132,7 +135,7 @@ run locked-keychain 1 "login keychain is locked" FAKE_KEYCHAIN=locked
 run build-fails 1 "The build failed" FAKE_BUILD=fail
 run wrong-signer 1 "isn't signed with certificate" FAKE_SIGNED_SHA1=3333333333333333333333333333333333333333
 
-run metal-download 0 "Metal toolchain: installed" FAKE_METAL=downloadable --no-open
+run metal-download 0 "Metal toolchain: installed" FAKE_METAL=downloadable -- --no-open
 grep -q new "$last_apps/irudd-voice.app/Contents/MacOS/irudd-voice" || fail "app not replaced"
 
 run install 0 "Certificate SHA-1: $SHA1"
@@ -140,7 +143,36 @@ grep -q new "$last_apps/irudd-voice.app/Contents/MacOS/irudd-voice" || fail "app
 [[ -z "$(ls -A "$last_apps" | grep -v '^irudd-voice.app$')" ]] || fail "leftover files in the apps folder"
 grep -q "irudd-voice.app" "$last_state/opened" || fail "app not opened"
 grep -q -- "-f .*irudd-voice.app" "$last_state/registered" || fail "app not re-registered for its icon"
+install_json="$work/install/state-dir/install.json"
+plutil -convert json -o /dev/null "$install_json" 2>/dev/null || fail "install.json isn't valid JSON"
+grep -q "\"signingSHA1\": \"$SHA1\"" "$install_json" || fail "install.json is missing the certificate"
+grep -q "\"commit\": \"[0-9a-f]\{40\}\"" "$install_json" || fail "install.json is missing the commit"
 
-run by-sha1 0 "Installed" IRUDD_VOICE_SIGNING_IDENTITY=$SHA1 --no-open
+# ---- Update now: build into a staging folder, then swap -------------------
+
+stage="$work/staged"
+run stage 0 "Staged $stage/irudd-voice.app" FAKE_BUILD_ID=staged -- --stage "$stage"
+grep -q old "$last_apps/irudd-voice.app/Contents/MacOS/irudd-voice" || fail "staging touched the installed app"
+grep -q staged "$stage/irudd-voice.app/Contents/MacOS/irudd-voice" || fail "nothing staged"
+plutil -convert json -o /dev/null "$stage/build-info.json" 2>/dev/null || fail "build-info.json isn't valid JSON"
+
+run stage-fails 1 "The build failed" FAKE_BUILD=fail -- --stage "$work/staged-broken"
+[[ ! -e "$work/staged-broken/irudd-voice.app" ]] || fail "a failed build left a staged app"
+
+# The app quits itself; --activate waits for it, swaps, records and reopens.
+sleep 1 & app_pid=$!
+run activate 0 "Installed" -- --activate "$stage" --wait-pid "$app_pid"
+grep -q staged "$last_apps/irudd-voice.app/Contents/MacOS/irudd-voice" || fail "staged app not swapped in"
+grep -q "irudd-voice.app" "$last_state/opened" || fail "app not reopened"
+grep -q '"commit"' "$work/activate/state-dir/install.json" || fail "activate didn't record the install"
+
+run activate-missing 1 "No staged build" -- --activate "$work/nothing-here"
+
+sleep 60 & stuck_pid=$!
+disown "$stuck_pid"
+run activate-app-wont-quit 1 "didn't quit within 1 seconds" IRUDD_VOICE_QUIT_TIMEOUT=1 -- --activate "$stage" --wait-pid "$stuck_pid"
+kill "$stuck_pid" 2>/dev/null || true
+
+run by-sha1 0 "Installed" IRUDD_VOICE_SIGNING_IDENTITY=$SHA1 -- --no-open
 
 echo "PASS install.sh ($passed cases)"

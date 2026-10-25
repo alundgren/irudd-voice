@@ -42,7 +42,23 @@ What to expect:
    downloads Apple's English speech files.
 
 If a check fails, install.sh says what's missing and leaves any installed
-app as it was. To update, run `git pull` and `./install.sh` again.
+app as it was.
+
+## Updating
+
+The app checks GitHub shortly after it starts. When there's something new,
+the panel and Settings → Updates show **Update Now**. It builds the new
+version on this Mac in the background, from the app's own copy of the
+source (`~/Library/Application Support/irudd-voice/source`), signed with
+the same certificate. You can keep dictating while it builds. Then
+**Restart to Update** swaps the whole app in and reopens it. If the build
+fails, the installed app stays exactly as it was.
+
+Before a new version changes the database layout, it saves a full copy in
+`~/Library/Application Support/irudd-voice/backups/`, after checking there's
+room. If there isn't, it stops without changing anything.
+
+Running `./install.sh` again from a clone works too.
 
 ## Signing certificate
 

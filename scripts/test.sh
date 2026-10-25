@@ -19,8 +19,13 @@ echo "== Signing certificate test"
 tests/signing-certificate-test.sh
 
 echo "== App build"
+test_build="${TMPDIR:-/tmp}/irudd-voice-test-build"
 xcodebuild -project App/IruddVoice.xcodeproj -scheme IruddVoice -configuration Debug \
-  -derivedDataPath "${TMPDIR:-/tmp}/irudd-voice-test-build" CODE_SIGN_IDENTITY=- -destination 'platform=macOS,arch=arm64' build -quiet
+  -derivedDataPath "$test_build" CODE_SIGN_IDENTITY=- -destination 'platform=macOS,arch=arm64' build -quiet
+# Xcode registers built apps with Launch Services; unregister this one so
+# Spotlight only finds the installed app.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+  -u "$test_build/Build/Products/Debug/irudd-voice.app" 2>/dev/null || true
 
 echo "== Probe build"
 swift build -c release --package-path tools/boya-probe
