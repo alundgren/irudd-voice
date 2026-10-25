@@ -10,7 +10,7 @@ models/<id>/
 ```
 
 The weights are MLX format and 4-bit quantized for the app. `<id>` matches
-`[a-z0-9][a-z0-9.-]*`, for example `qwen3.5-2b-base-q4` or
+`[a-z0-9][a-z0-9.-]*` and has no `..`, for example `qwen3.5-2b-base-q4` or
 `qwen3.5-2b-ft-20261025-1`.
 
 `irudd-voice models prepare` creates the base folders from the pinned Hugging

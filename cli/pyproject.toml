@@ -1,7 +1,7 @@
 [project]
 name = "irudd-voice"
 version = "0.1.0"
-description = "Command-line tools for irudd-voice: stats now; labeling, datasets and training later."
+description = "Command-line tools for irudd-voice: stats and logs, vocabulary, teacher labels, datasets, model folders, LoRA training, eval and comparison, promote and rollback."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
