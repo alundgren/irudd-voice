@@ -36,7 +36,10 @@ final class PermissionChecker {
             if checklist.state(of: .microphone) == .denied {
                 openPrivacySettings("Privacy_Microphone")
             } else {
-                AVCaptureDevice.requestAccess(for: .audio) { _ in
+                // These callbacks arrive on a background queue. Marking them
+                // @Sendable keeps Swift from treating them as main-actor code,
+                // which crashes the app when macOS calls them.
+                AVCaptureDevice.requestAccess(for: .audio) { @Sendable _ in
                     Task { @MainActor in self.refresh() }
                 }
             }
@@ -44,7 +47,7 @@ final class PermissionChecker {
             if checklist.state(of: .speechRecognition) == .denied {
                 openPrivacySettings("Privacy_SpeechRecognition")
             } else {
-                SFSpeechRecognizer.requestAuthorization { _ in
+                SFSpeechRecognizer.requestAuthorization { @Sendable _ in
                     Task { @MainActor in self.refresh() }
                 }
             }
