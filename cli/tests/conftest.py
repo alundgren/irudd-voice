@@ -24,3 +24,12 @@ def app_db(tmp_path, db_tool) -> Path:
     path = tmp_path / "voice.sqlite"
     subprocess.run([db_tool, "create", path], check=True)
     return path
+
+
+@pytest.fixture(autouse=True)
+def no_app_database(tmp_path, monkeypatch):
+    """Commands that record into the app's database by default (models
+    prepare, train) must never reach the real one from a test."""
+    from irudd_voice import db
+
+    monkeypatch.setattr(db, "DEFAULT_PATH", tmp_path / "app-support" / "voice.sqlite")

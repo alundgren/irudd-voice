@@ -12,6 +12,12 @@ swift build --product voice-db-tool --package-path Packages/IruddVoiceKit
 VOICE_DB_TOOL="$REPO_DIR/Packages/IruddVoiceKit/.build/debug/voice-db-tool" \
   uv run --project cli --quiet pytest -q cli/tests
 
+if [[ -n "${IRUDD_VOICE_SLOW:-}" ]]; then
+  # Loads a real model and trains a few LoRA steps; takes minutes and a few GB.
+  echo "== Slow model tests"
+  uv run --project cli --group ml --quiet pytest -q -m slow cli/tests
+fi
+
 echo "== Installer tests"
 tests/install-test.sh
 

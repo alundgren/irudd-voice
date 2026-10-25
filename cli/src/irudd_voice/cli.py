@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from statistics import median
 
-from . import dataset, db, label, vocab
+from . import dataset, db, label, model_commands, vocab
 
 
 def stats(con, path: Path) -> dict:
@@ -89,19 +89,22 @@ def print_stats(s: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="irudd-voice", description=__doc__)
-    parser.add_argument("--db", type=Path, default=db.DEFAULT_PATH, help="database file (default: the app's)")
+    # None when not given, so commands can tell an explicit --db from the
+    # default (train --tiny only records into an explicit one).
+    parser.add_argument("--db", type=Path, default=None, help="database file (default: the app's)")
     commands = parser.add_subparsers(dest="command", required=True)
     stats_parser = commands.add_parser("stats", help="what's been recorded so far")
     stats_parser.add_argument("--json", action="store_true", help="print JSON")
     events_parser = commands.add_parser("events", help="the app's recent log lines")
     events_parser.add_argument("-n", type=int, default=40, help="how many (default 40)")
     # Commands in their own modules open the database themselves.
-    for module in (label, vocab, dataset):
+    for module in (label, vocab, dataset, model_commands):
         module.register(commands)
     args = parser.parse_args(argv)
     if hasattr(args, "run"):
         return args.run(args)
 
+    args.db = args.db or db.DEFAULT_PATH
     try:
         con = db.connect(args.db)
     except db.SchemaError as error:
