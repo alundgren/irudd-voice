@@ -57,7 +57,8 @@ locked down:
   wins and the home folder is readable again.
 
 To check this on your Mac without any model call (it uses `codex sandbox`
-and a fake model server on 127.0.0.1):
+and a fake model server on 127.0.0.1). Run it again after every codex-cli
+update, because new versions can add tools or change the sandbox:
 
 ```sh
 uv run --project cli python scripts/codex-teacher-probe.py   # from the repo root
