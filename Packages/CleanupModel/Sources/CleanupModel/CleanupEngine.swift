@@ -106,10 +106,12 @@ public actor CleanupEngine: CleanupBackend {
             }
         }
         let start = clock.now
-        let context = try await LLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
+        // An unload or a newer load ran while the factory worked: the
+        // weights were dropped inside `loadContext`, before it returned.
+        guard let context = try await loadContext(folder: folder, order: order) else {
+            throw CleanupBackendError.superseded
+        }
         let loadTime = clock.now - start
-        // An unload or a newer load ran while the factory worked: drop this one.
-        guard sequence.isCurrent(order) else { throw CleanupBackendError.superseded }
 
         var stops = Self.configStopTokens(folder: folder)
         if let eos = context.tokenizer.eosTokenId {
@@ -133,14 +135,49 @@ public actor CleanupEngine: CleanupBackend {
                                          warmupSeconds: warmup.seconds))
     }
 
-    public func unload() {
-        unload(order: sequence.next)
+    /// Runs the model factory, counted in `loadsInFlight`. Returns nil when
+    /// a newer load or unload started meanwhile; the loaded weights are
+    /// released before this returns, so an unload waiting for it knows the
+    /// memory is free.
+    private func loadContext(folder: URL, order: UInt64) async throws -> ModelContext? {
+        loadsInFlight += 1
+        defer {
+            loadsInFlight -= 1
+            if loadsInFlight == 0 {
+                Memory.clearCache()
+                let waiting = loadWaiters
+                loadWaiters = []
+                waiting.forEach { $0.resume() }
+            }
+        }
+        return try await factoryLoad(folder: folder, order: order)
     }
 
-    public func unload(order: UInt64) {
+    /// Kept apart from `loadContext` so a superseded context is released
+    /// when this returns, before `loadContext` counts the load as done.
+    private func factoryLoad(folder: URL, order: UInt64) async throws -> ModelContext? {
+        let context = try await LLMModelFactory.shared.load(from: folder, using: LocalTokenizerLoader())
+        return sequence.isCurrent(order) ? context : nil
+    }
+
+    /// Loads still running in the model factory. `unload` waits for them.
+    public private(set) var loadsInFlight = 0
+    private var loadWaiters: [CheckedContinuation<Void, Never>] = []
+
+    public func unload() async {
+        await unload(order: sequence.next)
+    }
+
+    /// Drops the model. Returns only once no load is still reading weights,
+    /// so the memory is free when the helper replies (training relies on
+    /// this: shared/app-state.md "Starting training").
+    public func unload(order: UInt64) async {
         // An older unload that arrives after a newer load does nothing.
         guard sequence.start(order) else { return }
         dropModel()
+        while loadsInFlight > 0 {
+            await withCheckedContinuation { loadWaiters.append($0) }
+        }
     }
 
     private func dropModel() {

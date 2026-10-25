@@ -71,8 +71,58 @@ waits for that exact mic.
 ## Preview while talking: placement
 
 The preview floats just above the bottom of the screen, centred. It never
-takes focus or clicks. In Transcript mode the final text stays for 4
-seconds after a thought ends.
+takes focus or clicks. In Transcript mode, when a thought ends, it shows
+what was heard with a ✨ while it's being cleaned. Once the paste is done
+it shows what was **heard** above what was **pasted** for 4 seconds. Words
+cleanup removed are struck out in the heard line, and words it added or
+changed are in the accent colour in the pasted line. If the heard text was
+used instead, it's shown once under a plain reason, such as "Pasted as
+heard: cleanup changed a number" or "Pasted as heard: training is using the
+model". If the text box changed before the paste, it says **Waiting**
+instead of Pasted. Off and Dot modes show none of this.
+
+## Cleanup
+
+After Apple's speech recognition, a small model on this Mac tidies the
+text before it's pasted: fillers and false starts go, spoken corrections
+("fifteen, no, fifty") keep only the correction, and punctuation is fixed.
+It never answers or carries out what you said. The icon shows **Cleaning
+up** meanwhile; a 50-word thought takes about 1.2 s.
+
+- **The model** runs in a helper process inside the app
+  (`IruddVoiceCleanup.xpc`) and stays loaded. The app loads the active
+  model (`irudd-voice promote` picks it) or, if none is set, the default
+  base model (`gemma-4-e2b-base-q4`, see
+  [models/baseline.md](models/baseline.md)). It checks every file's
+  checksum before the first load of a folder. A trained model that can't
+  be loaded falls back to the default.
+- **Your text is safe.** If the helper can't be reached, crashes, takes
+  longer than 5 s, sends a reply that's cut off, unreadable or full of
+  thinking, or the cleaned text fails a hard check (a number, negation,
+  name or identifier changed, words added, the request answered, a question
+  turned into a statement), the raw text is pasted instead. The model's text
+  is never pasted when it failed a check. The row records why
+  (`cleanup_status`).
+- **Long thoughts** are cleaned in pieces of at most 120 words, split at
+  sentence ends (or after commas and the like, or at the word limit), in
+  order, and pasted once. If any piece fails, the whole thought is pasted
+  raw, never a mix.
+- **Order:** thoughts are pasted in the order they ended. A short thought
+  that's ready first waits for a long one before it.
+- **Throw away** while text is being made (transcribed or cleaned) drops
+  the newest such thought, and only that one.
+- **Switching models** only happens when no thought is in progress. The
+  app checks the active model every 10 s when idle and after each thought.
+- **Training** asks the app to unload the model while it runs (the
+  `cleanup.unload_until` lease in [shared/app-state.md](../shared/app-state.md)).
+  Meanwhile thoughts are pasted raw, and the model is loaded again when
+  training ends.
+- **Settings → Model** shows the active model, whether it's the base or a
+  trained one (when, on how many thoughts), the helper's status and memory,
+  and the last eval against the previous model. If the active trained
+  model couldn't be loaded, it says the default is in use and why. A folder
+  the helper refused isn't tried again until its manifest changes. A helper
+  that didn't answer gets three tries, then another go 10 minutes later.
 
 ## Pasting
 
@@ -103,6 +153,8 @@ seconds after a thought ends.
 - It never presses Enter or submits anything. You review and send.
 - It never loses a thought. Audio is saved before recognition, cleanup or
   pasting can fail.
+- It never pastes the model's text when it failed a check. You get what you
+  said instead.
 
 ## Deleting data
 

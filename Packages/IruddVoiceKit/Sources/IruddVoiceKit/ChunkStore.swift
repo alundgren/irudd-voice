@@ -58,6 +58,34 @@ public struct ChunkSummary: Sendable, Equatable {
     public let audioBytes: Int64
 }
 
+/// What cleanup did for a row: `status` is `cleaned` or why the raw text
+/// was pasted instead (`CleanupOutcome`). `cleanedText` is only set when
+/// the cleaned text was used.
+public struct CleanupRecord: Sendable, Equatable {
+    public var status: String
+    public var cleanedText: String?
+    public var modelID: String?
+    public var milliseconds: Int64
+    public var promptVersion: String?
+
+    public init(status: String, cleanedText: String?, modelID: String?, milliseconds: Int64, promptVersion: String?) {
+        self.status = status
+        self.cleanedText = cleanedText
+        self.modelID = modelID
+        self.milliseconds = milliseconds
+        self.promptVersion = promptVersion
+    }
+}
+
+/// A `models` row, as Settings → Model needs it.
+public struct ModelRow: Sendable, Equatable {
+    public var id: String
+    public var manifestJSON: String?
+    public var trainedChunks: Int64?
+    public var trainedAt: String?
+    public var evalReportJSON: String?
+}
+
 /// Reads and writes chunk rows. One connection, used from this actor only.
 public actor ChunkStore {
     private let db: Database
@@ -134,6 +162,61 @@ public actor ChunkStore {
                      [.text(message), .text(Timestamps.string(Date())), .int(id)])
     }
 
+    /// Records how cleanup went for a row (docs/database.md, `cleanup_status`).
+    public func markCleanup(id: Int64, _ record: CleanupRecord) throws {
+        try db.query("""
+            UPDATE chunks SET cleaned_text = ?, cleanup_model_id = ?, cleanup_status = ?, cleanup_ms = ?,
+                prompt_version = ?, updated_at = ? WHERE id = ?
+            """, [.optional(record.cleanedText), .optional(record.modelID), .text(record.status),
+                  .int(record.milliseconds), .optional(record.promptVersion), .text(Timestamps.string(Date())),
+                  .int(id)])
+    }
+
+    public func cleanupRecord(id: Int64) throws -> CleanupRecord? {
+        guard let row = try db.query("""
+            SELECT cleanup_status, cleaned_text, cleanup_model_id, cleanup_ms, prompt_version FROM chunks WHERE id = ?
+            """, [.int(id)]).first, let status = row[0].text else { return nil }
+        return CleanupRecord(status: status, cleanedText: row[1].text, modelID: row[2].text,
+                             milliseconds: row[3].int ?? 0, promptVersion: row[4].text)
+    }
+
+    public func pastedText(id: Int64) throws -> String? {
+        try db.query("SELECT pasted_text FROM chunks WHERE id = ?", [.int(id)]).first?[0].text
+    }
+
+    // MARK: App state shared with the CLI (shared/app-state.md)
+
+    public func appState(_ key: String) throws -> String? {
+        try db.query("SELECT value FROM app_state WHERE key = ?", [.text(key)]).first?[0].text
+    }
+
+    public func setAppState(_ key: String, _ value: String, at date: Date = Date()) throws {
+        try db.query("""
+            INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """, [.text(key), .text(value), .text(Timestamps.string(date))])
+    }
+
+    public func deleteAppState(_ key: String) throws {
+        try db.query("DELETE FROM app_state WHERE key = ?", [.text(key)])
+    }
+
+    /// The `active_model` row: nil model ID means the default base model.
+    public func activeModel() throws -> (modelID: String?, previousID: String?) {
+        guard let row = try db.query("SELECT model_id, previous_model_id FROM active_model WHERE slot = 1").first
+        else { return (nil, nil) }
+        let id = row[0].text.flatMap { $0.isEmpty ? nil : $0 }
+        return (id, row[1].text.flatMap { $0.isEmpty ? nil : $0 })
+    }
+
+    public func modelRow(id: String) throws -> ModelRow? {
+        guard let row = try db.query("""
+            SELECT id, manifest_json, trained_chunks, trained_at, eval_report_json FROM models WHERE id = ?
+            """, [.text(id)]).first else { return nil }
+        return ModelRow(id: row[0].text ?? id, manifestJSON: row[1].text, trainedChunks: row[2].int,
+                        trainedAt: row[3].text, evalReportJSON: row[4].text)
+    }
+
     public func chunk(id: Int64) throws -> ChunkSummary? {
         try summaries(where: "id = ?", [.int(id)]).first
     }
@@ -197,7 +280,8 @@ public actor ChunkStore {
             try db.execute("DELETE FROM dataset_days")
             try db.execute("DELETE FROM chunks")
             try db.execute("""
-                UPDATE models SET eval_report_json = json_remove(eval_report_json, '$.items')
+                UPDATE models SET eval_report_json = CASE WHEN json_valid(eval_report_json)
+                    THEN json_remove(eval_report_json, '$.items') ELSE NULL END
                 WHERE eval_report_json IS NOT NULL
                 """)
         }

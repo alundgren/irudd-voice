@@ -45,8 +45,9 @@ final class AppModel {
     private(set) var lastChunk: ChunkSummary?
     /// Text heard so far in the thought in progress (final plus volatile).
     private(set) var liveText = ""
-    /// The text of the thought that just ended, shown briefly in Transcript mode.
-    private(set) var justFinishedText: String?
+    /// The thought that just ended, shown briefly in Transcript mode: what
+    /// was heard, then also what was pasted.
+    private(set) var finished: FinishedThought?
     private(set) var databaseSize: Int64 = 0
     private(set) var dailyBytes: [(day: String, bytes: Int64)] = []
     private(set) var databaseError: String?
@@ -57,7 +58,21 @@ final class AppModel {
     private var thoughtSignalAt = Date()
     private var speechLocale: Locale?
     private var overlay: OverlayController?
-    private var thoughtsInFlight = 0
+    private var previewToken = 0
+    /// Thoughts that ended and aren't pasted yet, delivered in the order
+    /// they ended.
+    private let delivery = DeliveryLine<MadeThought>()
+
+    // MARK: Cleanup
+
+    private var cleanup: CleanupCoordinator?
+    private let cleanupClient = CleanupClient()
+    private(set) var cleanupSnapshot: CleanupCoordinator.Snapshot?
+    private(set) var modelOverview: ModelOverview?
+    /// Why cleanup can't run at all (the app is missing its prompt file).
+    private(set) var cleanupProblem: String?
+    /// The text last pasted (or held) for a row, for Paste last again.
+    private var lastDelivered: (id: Int64, text: String)?
 
     // MARK: Hotkeys and pasting
 
@@ -67,8 +82,6 @@ final class AppModel {
     private(set) var waiting: WaitingText?
     private let paster = Paster(clipboard: SystemClipboard(), keyboard: SystemKeyboard(), focus: AccessibilityFocus())
     private let focus = AccessibilityFocus()
-    /// Thoughts thrown away before their text arrived, by start time.
-    private var throwAwayPending = false
 
     var status: AppStatus {
         let ready = hasCompletedSetup && micState != .noMicPicked && micState != .noPermission
@@ -118,6 +131,29 @@ final class AppModel {
             databaseError = "Can't open the database: \(error)"
         }
 
+        if let store {
+            if let url = Bundle.main.url(forResource: "cleanup-prompt", withExtension: "json"),
+               let prompt = try? CleanupPrompt.load(from: url) {
+                let coordinator = CleanupCoordinator(helper: cleanupClient, store: store, prompt: prompt)
+                cleanup = coordinator
+                cleanupClient.onInterruption = { [weak self] in
+                    Task { @MainActor in
+                        await coordinator.helperStopped()
+                        self?.log(.warning, "cleanup", "The cleanup helper stopped; loading the model again.")
+                        await self?.cleanupIdleCheck()
+                    }
+                }
+            } else {
+                cleanupProblem = "cleanup-prompt.json is missing from the app, so text is pasted as heard."
+            }
+        }
+        delivery.onDelivered = { [weak self] remaining in
+            guard let self else { return }
+            if remaining == 0, activity == .cleaningUp { activity = waiting == nil ? .idle : .textWaiting }
+            // Check the lease and the active model after each thought.
+            Task { await self.cleanupIdleCheck() }
+        }
+
         capture.onEvent = { [weak self] event in self?.handle(event) }
         capture.onLevel = { [weak self] peak in self?.level = peak }
         capture.onTrouble = { [weak self] reason in
@@ -145,6 +181,16 @@ final class AppModel {
         Task {
             await refreshDatabaseInfo()
             await checkSpeechFiles()
+        }
+        // Load the cleanup model, then check the lease and the active model
+        // and write the heartbeat every 10 s (shared/app-state.md). Each
+        // check runs on its own, so a slow model load doesn't hold up the
+        // heartbeat of the next one.
+        Task {
+            while true {
+                Task { await cleanupIdleCheck() }
+                try? await Task.sleep(for: .seconds(10))
+            }
         }
         // Check for updates once a little after launch; building waits for Update Now.
         Task {
@@ -198,7 +244,7 @@ final class AppModel {
             activity = .hearing
             thoughtSignalAt = Date()
             liveText = ""
-            justFinishedText = nil
+            showPreview(nil)
             session = startSpeech()
             session?.append(preRoll)
         case .audio(let samples):
@@ -207,9 +253,7 @@ final class AppModel {
             return
         case .ended(let thought):
             activity = .cleaningUp
-            let discard = thought.endReason == .thrownAway || throwAwayPending
-            throwAwayPending = false
-            save(thought, transcription: session, discard: discard)
+            save(thought, transcription: session, discard: thought.endReason == .thrownAway)
             session = nil
         }
         overlay?.update()
@@ -253,58 +297,118 @@ final class AppModel {
             ?? UnavailableTranscription(reason: speechFiles == .installed
                 ? "Speech recognition didn't start for this thought."
                 : SpeechSetupError.assetsMissing.description)
-        thoughtsInFlight += 1
-        Task.detached(priority: .userInitiated) { [weak self] in
-            let id = await recorder.record(thought, meta: meta, transcription: transcription, saved: { _ in
+        delivery.add(make: { [weak self] number in
+            guard let id = await recorder.record(thought, meta: meta, transcription: transcription, saved: { _ in
                 Task { @MainActor in await self?.refreshDatabaseInfo() }
-            })
-            await MainActor.run { self?.thoughtsInFlight -= 1 }
+            }) else { return .notSaved }
             await self?.refreshDatabaseInfo()
-            await self?.showFinished()
-            if let id {
-                await self?.deliver(id: id, target: pasteTarget, discard: discard)
-            } else {
-                await self?.saveFailed()
-            }
-        }
+            guard !discard, let row = try? await store.chunk(id: id), row.status == "transcribed",
+                  let raw = row.rawText, !raw.isEmpty else { return .noText(id: id) }
+            await self?.showCleaning(raw, number: number)
+            // Thrown away already: don't spend the model's time on it.
+            if await self?.delivery.isThrownAway(number) ?? true { return .text(id: id, raw: raw, cleanup: nil) }
+            return .text(id: id, raw: raw, cleanup: await self?.clean(raw, id: id))
+        }, deliver: { [weak self] number, made, thrownAway in
+            await self?.deliver(made, number: number, discard: discard || thrownAway, target: pasteTarget)
+        })
     }
 
-    private func showFinished() {
+    /// Transcript mode: what was heard, while it's being cleaned.
+    private func showCleaning(_ raw: String, number: Int) {
         guard activity != .hearing else { return }
-        justFinishedText = lastChunk?.rawText
+        showPreview(FinishedThought(number: number, heard: raw))
+    }
+
+    /// Shows a finished thought in Transcript mode: what was heard while
+    /// it's being cleaned (up to 15 s), then the outcome for 4 seconds.
+    private func showPreview(_ preview: FinishedThought?) {
+        finished = preview
         overlay?.update()
+        previewToken += 1
+        let token = previewToken
+        guard let preview else { return }
         Task {
-            try? await Task.sleep(for: .seconds(4))
-            if self.activity != .hearing {
-                self.justFinishedText = nil
+            try? await Task.sleep(for: .seconds(preview.result == nil ? 15 : 4))
+            if token == self.previewToken, self.activity != .hearing {
+                self.finished = nil
                 self.overlay?.update()
             }
         }
     }
 
-    private func saveFailed() {
-        if activity == .cleaningUp { activity = waiting == nil ? .idle : .textWaiting }
+    /// Clears the preview if it's showing this thought.
+    private func clearPreview(_ number: Int) {
+        if finished?.number == number { showPreview(nil) }
     }
 
-    /// Pastes a finished row's text, or keeps it waiting.
-    private func deliver(id: Int64, target: PasteTarget?, discard: Bool) async {
-        guard let store, let row = try? await store.chunk(id: id) else { return }
-        defer { if activity == .cleaningUp { activity = waiting == nil ? .idle : .textWaiting } }
-        if discard {
-            try? await store.markDiscarded(id: id)
-            log(.info, "paste", "Thrown away, not pasted (#\(id))")
-            return
+    /// Pastes a thought's text or keeps it waiting. Runs in the order the
+    /// thoughts ended (`DeliveryLine`).
+    private func deliver(_ made: MadeThought, number: Int, discard: Bool, target: PasteTarget?) async {
+        guard let store else { return }
+        switch made {
+        case .notSaved:
+            clearPreview(number)
+        case .noText(let id):
+            clearPreview(number)
+            if discard {
+                try? await store.markDiscarded(id: id)
+                log(.info, "paste", "Thrown away, not pasted (#\(id))")
+            } else {
+                try? await store.markPaste(id: id, status: "empty", text: nil)
+            }
+        case .text(let id, let raw, let cleanup):
+            if discard {
+                clearPreview(number)
+                try? await store.markDiscarded(id: id)
+                log(.info, "paste", "Thrown away, not pasted (#\(id))")
+                return
+            }
+            let text = cleanup?.pasteText ?? raw
+            lastDelivered = (id, text)
+            var pasted = false
+            if let target {
+                let outcome = await paster.paste(text, into: target)
+                record(outcome, id: id, text: text, target: target)
+                pasted = outcome == .pasted
+            } else {
+                hold(WaitingText(id: id, text: text, reason: .targetMoved))
+            }
+            if activity != .hearing {
+                showPreview(FinishedThought(number: number, heard: raw, text: text, waiting: !pasted,
+                                            rawReason: cleanup?.plainReason))
+            }
         }
-        guard row.status == "transcribed", let text = row.rawText, !text.isEmpty else {
-            try? await store.markPaste(id: id, status: "empty", text: nil)
-            return
+    }
+
+    /// Cleans the text with the local model, or falls back to the raw text,
+    /// and records which in the row and the log.
+    private func clean(_ raw: String, id: Int64) async -> ThoughtCleanup {
+        let result = await cleanup?.clean(raw)
+            ?? .raw(raw, .noModel, detail: cleanupProblem ?? "Cleanup isn't set up.")
+        try? await store?.markCleanup(id: id, result.record)
+        let model = result.modelID.map { " with \($0)" } ?? ""
+        if result.outcome == .cleaned {
+            await store?.log(.info, "cleanup", "Cleaned \(raw.count) → \(result.pasteText.count) characters\(model) "
+                + "in \(result.milliseconds) ms (\(result.detail))", chunkID: id)
+        } else {
+            await store?.log(.warning, "cleanup", "Pasting the raw text: \(result.outcome.rawValue)\(model) after "
+                + "\(result.milliseconds) ms. \(result.detail)", chunkID: id)
         }
-        guard let target else {
-            hold(WaitingText(id: id, text: text, reason: .targetMoved))
-            return
-        }
-        let outcome = await paster.paste(text, into: target)
-        record(outcome, id: id, text: text, target: target)
+        return result
+    }
+
+    /// Follows the training lease and loads the active model when idle.
+    func cleanupIdleCheck() async {
+        guard let cleanup else { return }
+        await cleanup.idleCheck(busy: activity == .hearing || delivery.isBusy)
+        cleanupSnapshot = await cleanup.snapshot
+    }
+
+    /// Re-reads what Settings → Model shows.
+    func refreshModelInfo() async {
+        guard let store else { return }
+        modelOverview = await ModelOverview.read(store: store)
+        cleanupSnapshot = await cleanup?.snapshot
     }
 
     private func record(_ outcome: PasteOutcome, id: Int64, text: String, target: PasteTarget?) {
@@ -350,12 +454,14 @@ final class AppModel {
         if activity == .textWaiting { activity = .idle }
     }
 
-    /// Throw away: ends the thought in progress, or drops waiting text.
+    /// Throw away: ends the thought in progress, or keeps the newest thought
+    /// still being transcribed or cleaned from being pasted, or drops
+    /// waiting text.
     func throwAway() {
         if activity == .hearing {
             capture.finishThought(.thrownAway)
-        } else if activity == .cleaningUp {
-            throwAwayPending = true
+        } else if delivery.isBusy {
+            delivery.throwAwayNewest()
         } else if let waiting {
             Task { try? await store?.markDiscarded(id: waiting.id) }
             log(.info, "paste", "Waiting text thrown away (#\(waiting.id))")
@@ -366,6 +472,7 @@ final class AppModel {
 
     private func textToPasteAgain() -> (Int64, String)? {
         if let waiting { return (waiting.id, waiting.text) }
+        if let lastDelivered, lastDelivered.id == lastChunk?.id { return lastDelivered }
         if let last = lastChunk, last.status == "transcribed", let text = last.rawText, !text.isEmpty {
             return (last.id, text)
         }
@@ -592,6 +699,50 @@ struct MicChoice: Identifiable, Equatable {
     let name: String
     let connected: Bool
     var id: String { uid }
+}
+
+/// A thought that just ended, for the Transcript preview.
+struct FinishedThought: Equatable {
+    struct Result: Equatable {
+        /// What was pasted, or is waiting to be.
+        let text: String
+        let waiting: Bool
+        /// Why the heard text was used instead of the cleaned text, in
+        /// plain words; nil when the cleaned text was used.
+        let rawReason: String?
+        /// Both texts word by word, removed and added words marked.
+        let heardWords: [WordDiff.Word]
+        let textWords: [WordDiff.Word]
+    }
+
+    let number: Int
+    let heard: String
+    /// Nil while the text is being cleaned.
+    let result: Result?
+
+    init(number: Int, heard: String) {
+        self.number = number
+        self.heard = heard
+        result = nil
+    }
+
+    init(number: Int, heard: String, text: String, waiting: Bool, rawReason: String?) {
+        self.number = number
+        self.heard = heard
+        let words = WordDiff.compare(heard: heard, pasted: text)
+        result = Result(text: text, waiting: waiting, rawReason: rawReason,
+                        heardWords: words.heard, textWords: words.pasted)
+    }
+}
+
+/// What making a thought's text produced, for its delivery.
+enum MadeThought: Sendable {
+    /// Not even the audio could be saved.
+    case notSaved
+    /// Saved, but there's no text to paste (failed, empty, or thrown away).
+    case noText(id: Int64)
+    /// `cleanup` is nil when Throw Away came before cleaning.
+    case text(id: Int64, raw: String, cleanup: ThoughtCleanup?)
 }
 
 struct WaitingText: Equatable {
