@@ -32,7 +32,7 @@ One SQLite file holds everything the app records:
 | `dataset_days` | Which split (train, selection, test) each recording day belongs to; test days never move |
 | `models` | Trained cleanup models and their manifests and eval reports |
 | `active_model` | The one active model and the previous one, for rollback |
-| `events` | The app's log: saves, recognition results and timings, failures, mic changes. `irudd-voice events` prints it |
+| `events` | The app's log: saves, recognition results and timings, failures, mic changes, and cleanup (category `cleanup`: per thought, the model, time and pieces, or why the raw text was pasted, which hard check failed on which piece and what the model said; also model loads and unloads). `irudd-voice events` prints it |
 | `app_state` | Small key/value settings shared by app and CLI |
 
 ### `chunks`
@@ -49,5 +49,22 @@ One SQLite file holds everything the app records:
 | `audio`, `audio_format`, `audio_sample_rate`, `audio_bytes` | The whole recording as a FLAC file (16 kHz, 16-bit mono). If FLAC encoding ever fails, raw little-endian floats (`pcm_f32le`) at the mic's rate |
 | `target_app_bundle_id`, `target_app_name` | The app in front when the thought ended |
 | `raw_text`, `recognizer`, `transcribed_at` | Apple's text and which engine produced it |
-| `cleaned_text`, `cleanup_*`, `pasted_text`, `paste_*` | Filled in by later versions |
-| `schema_version`, `app_version`, `prompt_version` | What wrote the row |
+| `cleaned_text` | The model's cleaned text, only when it was used (`cleanup_status` = `cleaned`) |
+| `cleanup_status` | `cleaned`, or why the raw text was pasted instead: `unloaded_for_training`, `no_model`, `no_helper`, `crash`, `timeout`, `cut_off`, `think_tags`, `malformed`, `hard_check`, `empty`, `helper_error`. The `events` row for the chunk says more (which check failed, on which piece, what the model said) |
+| `cleanup_model_id`, `cleanup_ms` | The model that was asked, and how long cleanup took for the whole thought |
+| `pasted_text`, `paste_status`, `pasted_at` | What was pasted (the cleaned or the raw text); `pasted`, `waiting`, `copied`, `discarded` or `empty` |
+| `schema_version`, `app_version`, `prompt_version` | What wrote the row; `prompt_version` is the cleanup prompt the model was asked with |
+
+### `models` and `active_model`
+
+| Column | Meaning |
+| --- | --- |
+| `models.id` | The model folder's name in `models/`, also `manifest.json`'s `id` |
+| `models.manifest_json` | The folder's manifest; `training` holds how it was trained |
+| `models.dataset_hash`, `trained_chunks`, `trained_at` | Copied from the manifest's `training` block; null for base models |
+| `models.eval_report_json` | The latest `irudd-voice eval-compare` report for this model (fields in `shared/app-state.md`) |
+| `active_model.model_id` | The model the app uses; null means the default (`gemma-4-e2b-base-q4`) |
+| `active_model.previous_model_id` | What was active before; `irudd-voice rollback` swaps the two |
+
+`promote` and `rollback` change `active_model` in one transaction and log an
+`events` row (category `model`) in the same transaction.

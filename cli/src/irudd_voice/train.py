@@ -360,6 +360,17 @@ TINY_REQUESTS = (
 TINY_FILLERS = ("", "um ", "so ", "uh ", "okay so ", "um so basically ", "yeah ", "so like ")
 
 
+def next_model_id(cand: Candidate, models_dir: Path, con, day: date | None = None) -> str:
+    """`<candidate>-ft-<date>-<n>`, the first n that has neither a folder
+    nor a models row."""
+    stem = f"{cand.id}-ft-{(day or date.today()).strftime('%Y%m%d')}"
+    taken = {row[0] for row in con.execute("SELECT id FROM models WHERE id LIKE ?", (stem + "-%",))}
+    n = 1
+    while f"{stem}-{n}" in taken or (models_dir / f"{stem}-{n}").exists():
+        n += 1
+    return f"{stem}-{n}"
+
+
 def train_dataset(cand: Candidate, data: Path, model_id: str, *, models_dir: Path = DEFAULT_MODELS_DIR,
                   settings: LoraSettings | None = None, log=print) -> TrainResult:
     """Trains on a `dataset build` folder: train.jsonl, valid.jsonl (the
@@ -376,7 +387,10 @@ def train_dataset(cand: Candidate, data: Path, model_id: str, *, models_dir: Pat
     examples, augmented = summary["examples"], summary.get("augmented", {})
     return train(cand, data / "train.jsonl", data / "valid.jsonl", model_id, models_dir=models_dir,
                  settings=settings, chunks=examples["train"] - augmented.get("train", 0),
-                 dataset_hash=summary["dataset_hash"], log=log)
+                 dataset_hash=summary["dataset_hash"],
+                 extra_training={"candidate": cand.id, "base_model": cand.base_id,
+                                 "teacher_prompt_versions": summary.get("teacher_prompt_versions", []),
+                                 "vocabulary_hash": summary.get("vocabulary_hash")}, log=log)
 
 
 def tiny_examples(seed: int = 0) -> list[dict]:

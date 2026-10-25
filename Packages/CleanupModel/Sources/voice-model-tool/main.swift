@@ -12,6 +12,7 @@ import MLX
 //   bench    --model DIR [--runs 10] [--minutes N] [--out FILE]
 //   prompt-check --model DIR --reference FILE   (prompt tokens only; no weights loaded)
 //   xpc-check --model DIR    (the helper's handler over an in-process XPC listener)
+//   thought-check [--models DIR] [--model-id ID]   (the app's cleanup path, see below)
 //
 // Common options: --prompt FILE (default shared/cleanup-prompt.json),
 // --no-verify (skip manifest checksums).
@@ -527,14 +528,153 @@ func xpcCheck(_ options: Options) async throws -> Bool {
     async let racing = client.load(LoadRequest(folder: folder.path, verify: verify))
     try await Task.sleep(for: .milliseconds(150))
     let unloaded = try await client.unload()
+    // The unload replies only once the racing load has let go of its weights.
+    let inFlightAtReply = await engine.loadsInFlight
     let raced = try await racing
     let engineLoaded = await engine.isLoaded
     let after = try await client.status().state
-    expect(unloaded.state == .empty && raced.error != nil && !engineLoaded && after == .empty,
-           "unload during a load leaves nothing loaded (load said: \(raced.error ?? "ready"))")
+    expect(unloaded.state == .empty && raced.error != nil && !engineLoaded && after == .empty && inFlightAtReply == 0,
+           "unload during a load waits for it and leaves nothing loaded (load said: \(raced.error ?? "ready"))")
 
     let bad = try await client.load(LoadRequest(modelID: "../voice"))
     expect(bad.error != nil && bad.status.state == .empty, "refuses a bad model id and changes nothing")
+    return ok
+}
+
+// ---- thought-check -------------------------------------------------------------
+
+/// Times every clean call that passes through it.
+final class TimingHelper: CleanupHelper, @unchecked Sendable {
+    let inner: CleanupClient
+    private let lock = NSLock()
+    private var times: [(words: Int, seconds: Double)] = []
+
+    init(_ inner: CleanupClient) { self.inner = inner }
+
+    var pieces: [(words: Int, seconds: Double)] { lock.withLock { times } }
+    func reset() { lock.withLock { times = [] } }
+
+    func status(timeout: Duration) async throws -> CleanupStatus { try await inner.status(timeout: timeout) }
+    func load(_ request: LoadRequest, timeout: Duration) async throws -> LoadResponse {
+        try await inner.load(request, timeout: timeout)
+    }
+    func unload(timeout: Duration) async throws -> CleanupStatus { try await inner.unload(timeout: timeout) }
+    func clean(_ request: CleanRequest, timeout: Duration?) async throws -> CleanResponse {
+        let start = ContinuousClock.now
+        defer {
+            let seconds = (ContinuousClock.now - start).seconds
+            lock.withLock { times.append((request.transcript.split(separator: " ").count, seconds)) }
+        }
+        return try await inner.clean(request, timeout: timeout)
+    }
+}
+
+/// The app's cleanup path on a real model, without the app: the helper's
+/// handler over an in-process XPC listener, `CleanupClient`, and
+/// `CleanupCoordinator` on a temp database (the real models folder is only
+/// read). Checks the e2e sentence, the 40 questions, a 458-word thought in
+/// pieces, the training lease, and the row fields.
+func thoughtCheck(_ options: Options) async throws -> Bool {
+    let models = try options.url("models", default: ModelPaths.modelsFolder)
+    let modelID = options.values["model-id"] ?? CleanupDefaults.modelID
+    let prompt = try CleanupPrompt.load(from: options.url("prompt", default: repoFolder.appendingPathComponent("shared/cleanup-prompt.json")))
+    let engine = CleanupEngine(prompt: prompt)
+    let host = ListenerHost(handler: CleanupServiceHandler(prompt: prompt, backend: engine, modelsFolder: models))
+    let helper = TimingHelper(CleanupClient(endpoint: host.listener.endpoint))
+    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("thought-check-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: temp) }
+    let store = try ChunkStore(path: temp.appendingPathComponent("voice.sqlite").path)
+    let coordinator = CleanupCoordinator(
+        helper: helper, store: store, prompt: prompt, modelsFolder: models,
+        vocabularyFile: temp.appendingPathComponent("vocabulary.json"), defaultModelID: modelID)
+    var ok = true
+    func expect(_ condition: Bool, _ label: String) {
+        print("\(condition ? "ok  " : "FAIL") \(label)")
+        ok = ok && condition
+    }
+
+    let clock = ContinuousClock()
+    var start = clock.now
+    await coordinator.idleCheck(busy: false)
+    let firstStatus = try await store.appState("cleanup.status")
+    let firstLoaded = try await store.appState("cleanup.loaded_model")
+    expect(firstStatus == "loaded" && firstLoaded == modelID,
+           String(format: "loads %@ with checksums in %.1f s (%@)", modelID, (clock.now - start).seconds,
+                  firstStatus ?? "no status"))
+
+    // The e2e sentence (plan check e2e).
+    let sentence = "um change the timeout to fifteen seconds no fifty seconds and don't touch the retries"
+    let expected = "Change the timeout to fifty seconds, and don't touch the retries."
+    let e2e = await coordinator.clean(sentence)
+    let safe = e2e.outcome == .cleaned || e2e.pasteText == sentence
+    expect(safe, "e2e: \(e2e.outcome.rawValue) in \(e2e.milliseconds) ms, pastes \(String(reflecting: e2e.pasteText))")
+    print("     \(e2e.pasteText == expected ? "matches" : "differs from") the expected \(String(reflecting: expected))")
+    if e2e.outcome != .cleaned { print("     why: \(e2e.detail)") }
+
+    // The 40 questions and commands through the app's path (plan check
+    // never-answers): what would be pasted is the cleaned request, or the
+    // raw text when the model's reply failed a check; never an answer.
+    var outcomes: [String: Int] = [:]
+    var unsafe: [String] = []
+    for item in try readJSONL(repoFolder.appendingPathComponent("evals/questions.jsonl")) {
+        let result = await coordinator.clean(item.transcript)
+        outcomes[result.outcome.rawValue, default: 0] += 1
+        let pastedFails = !HardChecks.check(transcript: item.transcript, cleaned: result.pasteText,
+                                            maxWordsRatio: prompt.checks.maxOutputWordsRatio,
+                                            maxWordsSlack: prompt.checks.maxOutputWordsSlack).isEmpty
+        if result.outcome == .cleaned && pastedFails || result.outcome != .cleaned && result.pasteText != item.transcript {
+            unsafe.append(item.id ?? item.transcript)
+        }
+    }
+    expect(unsafe.isEmpty, "40 questions: \(outcomes.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", "))"
+           + (unsafe.isEmpty ? "; every paste is the request itself" : "; unsafe: \(unsafe)"))
+
+    // A 458-word thought: pieces of at most 120 words, each within the deadline.
+    let long = try String(contentsOf: repoFolder.appendingPathComponent("evals/long-thought.txt"), encoding: .utf8)
+    helper.reset()
+    let result = await coordinator.clean(long)
+    let pieces = helper.pieces
+    let slowest = pieces.map(\.seconds).max() ?? 0
+    expect(pieces.allSatisfy { $0.words <= ThoughtPieces.maxWords } && slowest < prompt.generation.timeoutSeconds,
+           "long thought: \(long.split(separator: " ").count) words, \(result.pieces) pieces, "
+           + pieces.map { String(format: "%d words %.2f s", $0.words, $0.seconds) }.joined(separator: ", "))
+    expect(result.outcome == .cleaned || result.pasteText == long,
+           "long thought: \(result.outcome.rawValue) in \(result.milliseconds) ms, pasted once (\(result.pasteText.split(separator: " ").count) words)")
+    if result.outcome != .cleaned { print("     why: \(result.detail)") }
+    if result.outcome == .cleaned { print("     cleaned: \(result.pasteText)") }
+
+    // The training lease: unload, raw meanwhile, reload when it ends.
+    try await store.setAppState("cleanup.unload_until", Timestamps.string(Date().addingTimeInterval(120)))
+    start = clock.now
+    await coordinator.idleCheck(busy: false)
+    let unloadTime = (clock.now - start).seconds
+    let loadedDuringLease = await engine.isLoaded
+    let inFlight = await engine.loadsInFlight
+    let leaseStatus = try await store.appState("cleanup.status")
+    expect(leaseStatus == "unloaded-for-training" && !loadedDuringLease && inFlight == 0,
+           String(format: "lease: unloaded in %.2f s, status %@", unloadTime, leaseStatus ?? "none"))
+    let duringLease = await coordinator.clean("run the tests")
+    expect(duringLease.outcome == .unloadedForTraining && duringLease.pasteText == "run the tests",
+           "lease: a thought pastes raw (\(duringLease.outcome.rawValue))")
+    try await store.deleteAppState("cleanup.unload_until")
+    start = clock.now
+    await coordinator.idleCheck(busy: false)
+    let reloaded = await engine.isLoaded
+    let reloadStatus = try await store.appState("cleanup.status")
+    expect(reloaded && reloadStatus == "loaded",
+           String(format: "lease ended: reloaded in %.1f s (no second checksum pass)", (clock.now - start).seconds))
+
+    // The row fields.
+    let audio = AudioEncoding.encode(samples: [Float](repeating: 0, count: 16_000), sampleRate: 16_000)
+    let now = Date()
+    let meta = ChunkMeta(startedAt: now, signalAt: now, endedAt: now, startReason: .hotkey, endReason: .hotkey,
+                         micUID: "thought-check", appVersion: "thought-check")
+    let id = try await store.insertPending(meta: meta, audio: audio, durationMs: 1000)
+    try await store.markCleanup(id: id, e2e.record)
+    let row = try await store.cleanupRecord(id: id)
+    expect(row == e2e.record && row?.promptVersion == prompt.version && row?.modelID == modelID,
+           "row: cleanup_status \(row?.status ?? "-"), cleanup_model_id \(row?.modelID ?? "-"), "
+           + "cleanup_ms \(row?.milliseconds ?? 0), prompt_version \(row?.promptVersion ?? "-")")
     return ok
 }
 
@@ -554,6 +694,7 @@ do {
     case "bench": try await bench(options)
     case "prompt-check": exit(try await promptCheck(options) ? 0 : 1)
     case "xpc-check": exit(try await xpcCheck(options) ? 0 : 1)
+    case "thought-check": exit(try await thoughtCheck(options) ? 0 : 1)
     default:
         log("unknown command \(arguments[1])")
         exit(2)

@@ -49,6 +49,24 @@ CANDIDATES = {
     )
 }
 
+# The model the app uses while active_model is empty: the baseline pick
+# (docs/models/baseline.md: gemma-4-e2b-base-q4).
+DEFAULT_CANDIDATE = "gemma-4-e2b"
+
+
+def default_model_id() -> str:
+    return CANDIDATES[DEFAULT_CANDIDATE].base_id
+
+
+def candidate_for(manifest: dict) -> Candidate:
+    """The candidate a model folder was built from."""
+    for cand in CANDIDATES.values():
+        if (cand.repo, cand.revision) == (manifest.get("base_repo"), manifest.get("base_revision")):
+            return cand
+    raise ModelError(f"{manifest.get('id')} was built from {manifest.get('base_repo')}@{manifest.get('base_revision')}, "
+                     "which isn't a known candidate")
+
+
 # What a conversion needs from a snapshot. The Qwen checkpoints also carry a
 # vision tower; mlx-lm drops it when it loads them as text models.
 SNAPSHOT_PATTERNS = ["*.json", "*.safetensors", "*.jinja", "*.txt", "tokenizer.model"]
