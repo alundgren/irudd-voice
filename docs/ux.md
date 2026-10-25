@@ -11,10 +11,10 @@ the dark native version (Scope tab `irudd-voice-ui-mocks-dark`).
 The app ends a thought when the mic's mute button makes the audio go
 silent (see [hardware/boya-by-gm18cu.md](hardware/boya-by-gm18cu.md)).
 To notice that, it has to keep listening. So while the switch in the panel
-is on, the mic stream is open and macOS shows its orange mic dot the whole
-time. Nothing is saved until you unmute and talk.
+is on, the mic stream is open and macOS shows its orange microphone
+indicator in the menu bar the whole time. Nothing is saved until you unmute and talk.
 
-Switching the app off closes the mic stream. The orange dot goes away, and
+Switching the app off closes the mic stream. The orange indicator goes away, and
 nothing is recorded until you switch it on again.
 
 ## Menu-bar states
@@ -56,8 +56,9 @@ waits for that exact mic.
 ## Starting and ending a thought
 
 - **Mute button** (mics that go silent when muted, like the BOYA):
-  unmuting starts a thought, muting ends it. Pausing to think doesn't end
-  it.
+  unmuting starts a thought, muting ends it. Silence never ends it. A
+  silence timeout was tried and felt stressful: you couldn't stop to think
+  without your prompt being cut in two.
 - **Hotkey** (Settings → Hotkeys, none by default): starts a thought or
   ends the current one. Meant for mics without a mute button, like
   AirPods. A thought started this way also ends after 5 seconds of
