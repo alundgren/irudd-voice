@@ -60,14 +60,35 @@ struct ModelManifestTests {
     @Test func dotFilesArentPartOfTheFolder() throws {
         let folder = try makeFolder()
         let manifest = try ModelManifest.load(folder: folder)
-        try FileManager.default.createDirectory(at: folder.appendingPathComponent(".cache/hf"), withIntermediateDirectories: true)
-        try "x".write(to: folder.appendingPathComponent(".cache/hf/lock"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent(".cache"), withIntermediateDirectories: true)
+        try "x".write(to: folder.appendingPathComponent(".cache/x"), atomically: true, encoding: .utf8)
         try "x".write(to: folder.appendingPathComponent(".DS_Store"), atomically: true, encoding: .utf8)
         try manifest.verify(folder: folder)
         // Listed dot files aren't required either.
         var listing = manifest
         listing.files[".gitattributes"] = "0000"
         try listing.verify(folder: folder)
+    }
+
+    @Test func theMacHiddenFlagDoesntSkipAFile() throws {
+        let folder = try makeFolder()
+        let manifest = try ModelManifest.load(folder: folder)
+        var extra = folder.appendingPathComponent("extra.json")
+        try "x".write(to: extra, atomically: true, encoding: .utf8)
+        var values = URLResourceValues()
+        values.isHidden = true
+        try extra.setResourceValues(values)
+        #expect(try extra.resourceValues(forKeys: [.isHiddenKey]).isHidden == true)
+        // Hidden by flag but no leading dot: still part of the folder, so unlisted.
+        #expect(throws: ModelFolderError.unlistedFile("extra.json")) { try manifest.verify(folder: folder) }
+        // And a listed weights file with the flag is still hashed.
+        var weights = folder.appendingPathComponent("model.safetensors")
+        try weights.setResourceValues(values)
+        try FileManager.default.removeItem(at: extra)
+        try manifest.verify(folder: folder)
+        try "changed".write(to: weights, atomically: false, encoding: .utf8)
+        try weights.setResourceValues(values)
+        #expect(throws: ModelFolderError.checksumMismatch("model.safetensors")) { try manifest.verify(folder: folder) }
     }
 
     @Test func refusesAWrongID() throws {

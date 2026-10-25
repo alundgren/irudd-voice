@@ -110,7 +110,10 @@ public struct ModelManifest: Codable, Equatable, Sendable {
         }
     }
 
-    /// A relative path with a file or folder name starting with ".".
+    /// Whether a path relative to the model folder is skipped: its name, or
+    /// any parent folder's name inside the model folder, starts with "."
+    /// (shared/manifest.schema.md). Not `.skipsHiddenFiles`, which also
+    /// skips files with the macOS hidden flag, so Swift and Python would differ.
     static func isDotPath(_ path: String) -> Bool {
         path.split(separator: "/").contains { $0.hasPrefix(".") }
     }
