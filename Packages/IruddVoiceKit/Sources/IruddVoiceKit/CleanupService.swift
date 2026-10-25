@@ -134,6 +134,16 @@ public enum CleanupClientError: Error, Equatable, LocalizedError {
     }
 }
 
+/// What the app needs from the cleanup helper. `CleanupClient` talks to the
+/// real one over XPC; tests use a stand-in.
+public protocol CleanupHelper: AnyObject, Sendable {
+    func status(timeout: Duration) async throws -> CleanupStatus
+    func load(_ request: LoadRequest, timeout: Duration) async throws -> LoadResponse
+    /// `timeout` nil: the request's deadline plus `CleanupClient.cleanTimeoutMargin`.
+    func clean(_ request: CleanRequest, timeout: Duration?) async throws -> CleanResponse
+    func unload(timeout: Duration) async throws -> CleanupStatus
+}
+
 /// Talks to the cleanup helper. Every call has a timeout; a crashed or
 /// interrupted helper is an error, never a hang.
 ///
@@ -142,7 +152,7 @@ public enum CleanupClientError: Error, Equatable, LocalizedError {
 ///   helper again, empty, so the app loads the model again.
 /// - Invalidated (the connection can't be used any more): the next call
 ///   opens a new connection.
-public final class CleanupClient: @unchecked Sendable {
+public final class CleanupClient: CleanupHelper, @unchecked Sendable {
     /// How much longer than the helper's deadline `clean` waits for an answer.
     public static let cleanTimeoutMargin: Duration = .seconds(1)
     /// The deadline `clean` assumes when the request has none
