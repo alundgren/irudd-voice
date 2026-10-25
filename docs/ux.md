@@ -109,8 +109,10 @@ up** meanwhile; a 50-word thought takes about 1.2 s.
   raw, never a mix.
 - **Order:** thoughts are pasted in the order they ended. A short thought
   that's ready first waits for a long one before it.
-- **Throw away** while text is being made (transcribed or cleaned) drops
-  the newest such thought, and only that one.
+- **Throw away** follows what the menu shows. On **Text waiting** it
+  drops the waiting text. On **Cleaning up** it drops the newest thought
+  still being transcribed or cleaned, and only that one. A thought whose
+  paste has already started can't be stopped.
 - **Switching models** only happens when no thought is in progress. The
   app checks the active model every 10 s when idle and after each thought.
 - **Training** asks the app to unload the model while it runs (the

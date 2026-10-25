@@ -365,16 +365,17 @@ final class AppModel {
             }
             let text = cleanup?.pasteText ?? raw
             lastDelivered = (id, text)
-            var pasted = false
+            var waitReason: WaitReason?
             if let target {
                 let outcome = await paster.paste(text, into: target)
                 record(outcome, id: id, text: text, target: target)
-                pasted = outcome == .pasted
+                if case .waiting(let reason) = outcome { waitReason = reason }
             } else {
                 hold(WaitingText(id: id, text: text, reason: .targetMoved))
+                waitReason = .targetMoved
             }
             if activity != .hearing {
-                showPreview(FinishedThought(number: number, heard: raw, text: text, waiting: !pasted,
+                showPreview(FinishedThought(number: number, heard: raw, text: text, waitReason: waitReason,
                                             rawReason: cleanup?.plainReason))
             }
         }
@@ -454,19 +455,25 @@ final class AppModel {
         if activity == .textWaiting { activity = .idle }
     }
 
-    /// Throw away: ends the thought in progress, or keeps the newest thought
-    /// still being transcribed or cleaned from being pasted, or drops
-    /// waiting text.
+    /// Throw away: ends the thought being heard, drops the waiting text the
+    /// menu shows, or keeps the newest thought still being transcribed or
+    /// cleaned from being pasted (`ThrowAwayTarget`).
     func throwAway() {
-        if activity == .hearing {
+        switch ThrowAwayTarget.pick(activity: activity, hasWaitingText: waiting != nil, deliveryBusy: delivery.isBusy) {
+        case .thoughtBeingHeard:
             capture.finishThought(.thrownAway)
-        } else if delivery.isBusy {
-            delivery.throwAwayNewest()
-        } else if let waiting {
+        case .newestInFlight:
+            if delivery.throwAwayNewest() == nil {
+                log(.info, "paste", "Throw away came too late: the thought was already being pasted")
+            }
+        case .waitingText:
+            guard let waiting else { return }
             Task { try? await store?.markDiscarded(id: waiting.id) }
             log(.info, "paste", "Waiting text thrown away (#\(waiting.id))")
             self.waiting = nil
-            if activity == .textWaiting { activity = .idle }
+            if activity == .textWaiting { activity = delivery.isBusy ? .cleaningUp : .idle }
+        case .nothing:
+            break
         }
     }
 
@@ -706,7 +713,9 @@ struct FinishedThought: Equatable {
     struct Result: Equatable {
         /// What was pasted, or is waiting to be.
         let text: String
-        let waiting: Bool
+        /// Why it's waiting instead of pasted; nil when it was pasted.
+        let waitReason: WaitReason?
+        var waiting: Bool { waitReason != nil }
         /// Why the heard text was used instead of the cleaned text, in
         /// plain words; nil when the cleaned text was used.
         let rawReason: String?
@@ -726,11 +735,11 @@ struct FinishedThought: Equatable {
         result = nil
     }
 
-    init(number: Int, heard: String, text: String, waiting: Bool, rawReason: String?) {
+    init(number: Int, heard: String, text: String, waitReason: WaitReason?, rawReason: String?) {
         self.number = number
         self.heard = heard
         let words = WordDiff.compare(heard: heard, pasted: text)
-        result = Result(text: text, waiting: waiting, rawReason: rawReason,
+        result = Result(text: text, waitReason: waitReason, rawReason: rawReason,
                         heardWords: words.heard, textWords: words.pasted)
     }
 }

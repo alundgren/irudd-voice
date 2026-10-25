@@ -139,8 +139,8 @@ private struct ThoughtOutcome: View {
                     $0.foregroundColor = .accentColor
                 })
             }
-            if result.waiting {
-                Text("Not pasted: the text box changed. It's waiting in the menu.")
+            if let reason = result.waitReason {
+                Text("\(reason.description) It's waiting in the menu.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

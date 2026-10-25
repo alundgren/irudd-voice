@@ -11,10 +11,13 @@ final class ScriptedHelper: CleanupHelper, @unchecked Sendable {
     private var _unloads = 0
     /// Model IDs whose folder the helper refuses.
     var refuse: Set<String> = []
-    /// How long a load, a status call and a clean take.
-    var loadTime: Duration = .zero
-    var statusTime: Duration = .zero
-    var cleanTime: Duration = .zero
+    /// When set, a load, a status call or a clean waits until the test
+    /// opens the gate (after the call is counted).
+    var loadGate: Gate?
+    var statusGate: Gate?
+    var cleanGate: Gate?
+    private var _statusCalls = 0
+    var statusCalls: Int { lock.withLock { _statusCalls } }
     /// Thrown by load (the helper didn't answer).
     var loadError: CleanupClientError?
     /// The reply to each clean request; the default echoes the transcript.
@@ -31,14 +34,15 @@ final class ScriptedHelper: CleanupHelper, @unchecked Sendable {
     var unloads: Int { lock.withLock { _unloads } }
 
     func status(timeout: Duration) async throws -> CleanupStatus {
-        if statusTime > .zero { try await Task.sleep(for: statusTime) }
+        lock.withLock { _statusCalls += 1 }
+        await statusGate?.wait()
         let loaded = loaded
         return CleanupStatus(state: loaded == nil ? .empty : .ready, modelID: loaded, residentBytes: 3 << 30)
     }
 
     func load(_ request: LoadRequest, timeout: Duration) async throws -> LoadResponse {
         lock.withLock { _loads.append(request) }
-        if loadTime > .zero { try await Task.sleep(for: loadTime) }
+        await loadGate?.wait()
         if let loadError { throw loadError }
         let id = request.modelID ?? ""
         if refuse.contains(id) {
@@ -51,7 +55,7 @@ final class ScriptedHelper: CleanupHelper, @unchecked Sendable {
 
     func clean(_ request: CleanRequest, timeout: Duration?) async throws -> CleanResponse {
         lock.withLock { _requests.append(request) }
-        if cleanTime > .zero { try await Task.sleep(for: cleanTime) }
+        await cleanGate?.wait()
         guard loaded != nil else { return CleanResponse(reply: nil, error: "No cleanup model is loaded.") }
         return try reply(request)
     }
@@ -67,6 +71,31 @@ final class ScriptedHelper: CleanupHelper, @unchecked Sendable {
 
 func repoPrompt() throws -> CleanupPrompt {
     try CleanupPrompt.load(from: sharedFolder.appendingPathComponent("cleanup-prompt.json"))
+}
+
+/// Holds callers until the test opens it.
+actor Gate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
+/// Waits until `condition` holds, checking every 5 ms, for up to 10 s.
+func waitUntil(_ condition: @Sendable () async throws -> Bool) async rethrows {
+    let deadline = ContinuousClock.now + .seconds(10)
+    while try await !condition(), ContinuousClock.now < deadline {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
 }
 
 /// A clock tests move by hand.
@@ -338,13 +367,15 @@ struct CleanupCoordinatorTests {
     @Test func heartbeatWhileAnotherCheckIsLoading() async throws {
         let clock = TestClock()
         let fixture = try CleanupFixture(clock: clock)
-        fixture.helper.loadTime = .milliseconds(500)
+        let gate = Gate()
+        fixture.helper.loadGate = gate
         let loading = Task { await fixture.coordinator.idleCheck(busy: false) }
-        try await Task.sleep(for: .milliseconds(100))
+        await waitUntil { fixture.helper.loads.count == 1 }
         #expect(try await fixture.state("cleanup.status") == "loading")
         clock.advance(10)
         await fixture.coordinator.idleCheck(busy: false)
         #expect(try await fixture.state("cleanup.checked_at") == Timestamps.string(clock.now))
+        await gate.open()
         await loading.value
         #expect(try await fixture.state("cleanup.status") == "loaded")
     }
@@ -406,35 +437,47 @@ struct CleanupCoordinatorTests {
         let trained = "gemma-4-e2b-ft-20261025-1"
         let fixture = try CleanupFixture(models: [CleanupDefaults.modelID, trained])
         await fixture.coordinator.idleCheck(busy: false)
-        fixture.helper.cleanTime = .milliseconds(400)
 
         // Switch: the active model changes while a thought is being cleaned.
         try fixture.addModel(trained, active: true)
+        var gate = Gate()
+        fixture.helper.cleanGate = gate
         let cleaning = Task { await fixture.coordinator.clean("run the tests") }
-        try await Task.sleep(for: .milliseconds(50))
+        await waitUntil { fixture.helper.requests.count == 1 }
         await fixture.coordinator.idleCheck(busy: false)
         #expect(fixture.helper.loaded == CleanupDefaults.modelID)
+        await gate.open()
         #expect(await cleaning.value.outcome == .cleaned)
         await fixture.coordinator.idleCheck(busy: false)
         #expect(fixture.helper.loaded == trained)
 
         // The check waits on the helper, and a thought starts meanwhile.
         try fixture.cli().query("UPDATE active_model SET model_id = NULL")
-        fixture.helper.statusTime = .milliseconds(200)
+        let statusGate = Gate()
+        gate = Gate()
+        fixture.helper.statusGate = statusGate
+        fixture.helper.cleanGate = gate
+        let calls = fixture.helper.statusCalls
         let check = Task { await fixture.coordinator.idleCheck(busy: false) }
-        try await Task.sleep(for: .milliseconds(50))
+        await waitUntil { fixture.helper.statusCalls == calls + 1 }
         let second = Task { await fixture.coordinator.clean("run the tests") }
+        await waitUntil { fixture.helper.requests.count == 2 }
+        await statusGate.open()
         await check.value
         #expect(fixture.helper.loaded == trained)
+        await gate.open()
         #expect(await second.value.outcome == .cleaned)
-        fixture.helper.statusTime = .zero
+        fixture.helper.statusGate = nil
 
         // Lease: no unload until the thought is done.
+        gate = Gate()
+        fixture.helper.cleanGate = gate
         let third = Task { await fixture.coordinator.clean("run the tests") }
-        try await Task.sleep(for: .milliseconds(50))
+        await waitUntil { fixture.helper.requests.count == 3 }
         try await fixture.setLease(seconds: 120)
         await fixture.coordinator.idleCheck(busy: false)
         #expect(fixture.helper.unloads == 0)
+        await gate.open()
         #expect(await third.value.outcome == .cleaned)
         await fixture.coordinator.idleCheck(busy: false)
         #expect(fixture.helper.unloads == 1)
@@ -667,9 +710,10 @@ struct DeliveryLineTests {
     @Test func deliversInTheOrderThoughtsEnded() async {
         let line = DeliveryLine<String>()
         let log = Log()
+        let gate = Gate()
         // A long thought A, then a short thought B that's ready first.
         line.add(make: { _ in
-            try? await Task.sleep(for: .milliseconds(300))
+            await gate.wait()
             log.add("made A")
             return "A"
         }, deliver: { _, item, _ in log.add("pasted \(item)") })
@@ -678,6 +722,9 @@ struct DeliveryLineTests {
             return "B"
         }, deliver: { _, item, _ in log.add("pasted \(item)") })
         #expect(line.isBusy)
+        await waitUntil { log.all.contains("made B") }
+        #expect(log.all == ["made B"])
+        await gate.open()
         await last.value
         #expect(log.all == ["made B", "made A", "pasted A", "pasted B"])
         #expect(!line.isBusy)
@@ -686,20 +733,23 @@ struct DeliveryLineTests {
     @Test func throwAwayHitsTheNewestThoughtOnly() async {
         let line = DeliveryLine<String>()
         let log = Log()
+        let gateA = Gate(), gateB = Gate()
         line.add(make: { _ in
-            try? await Task.sleep(for: .milliseconds(300))
+            await gateA.wait()
             return "A"
         }, deliver: { _, item, thrownAway in log.add("\(item) \(thrownAway ? "discarded" : "pasted")") })
         let last = line.add(make: { _ in
-            try? await Task.sleep(for: .milliseconds(100))
+            await gateB.wait()
             return "B"
         }, deliver: { _, item, thrownAway in log.add("\(item) \(thrownAway ? "discarded" : "pasted")") })
-        // Throw Away while B is being cleaned: B, not A.
-        try? await Task.sleep(for: .milliseconds(20))
+        // Throw Away while both are being cleaned: B, not A.
         #expect(line.throwAwayNewest() == 2)
         #expect(line.isThrownAway(2) && !line.isThrownAway(1))
+        await gateB.open()
+        await gateA.open()
         await last.value
         #expect(log.all == ["A pasted", "B discarded"])
+        #expect(line.marked.isEmpty)
         // The mark went with B: the next thought isn't affected.
         let next = line.add(make: { _ in "C" }, deliver: { _, item, thrownAway in
             log.add("\(item) \(thrownAway ? "discarded" : "pasted")")
@@ -707,6 +757,35 @@ struct DeliveryLineTests {
         await next.value
         #expect(log.all.last == "C pasted")
         #expect(line.throwAwayNewest() == nil)
+    }
+
+    /// Throw Away while a thought is being pasted can't stop that paste,
+    /// so it marks nothing (and leaves no mark behind); a newer thought
+    /// still being made is marked instead.
+    @Test func throwAwayDuringThePaste() async {
+        let line = DeliveryLine<String>()
+        let log = Log()
+        let pasting = Gate(), makingB = Gate()
+        line.add(make: { _ in "A" }, deliver: { _, item, thrownAway in
+            log.add("pasting \(item)")
+            await pasting.wait()
+            log.add("\(item) \(thrownAway ? "discarded" : "pasted")")
+        })
+        await waitUntil { log.all == ["pasting A"] }
+        #expect(line.throwAwayNewest() == nil)
+        #expect(line.marked.isEmpty)
+
+        let last = line.add(make: { _ in
+            await makingB.wait()
+            return "B"
+        }, deliver: { _, item, thrownAway in log.add("\(item) \(thrownAway ? "discarded" : "pasted")") })
+        #expect(line.throwAwayNewest() == 2)
+        await pasting.open()
+        await makingB.open()
+        await last.value
+        #expect(log.all == ["pasting A", "A pasted", "B discarded"])
+        #expect(line.marked.isEmpty)
+        #expect(!line.isBusy)
     }
 
     @Test func reportsWhatsLeftAfterEachDelivery() async {
@@ -717,5 +796,18 @@ struct DeliveryLineTests {
         let last = line.add(make: { $0 }, deliver: { _, _, _ in })
         await last.value
         #expect(log.all == ["left 1", "left 0"])
+    }
+}
+
+struct ThrowAwayTargetTests {
+    @Test func followsWhatTheMenuShows() {
+        // A waits in Text waiting while B is still being cleaned.
+        #expect(ThrowAwayTarget.pick(activity: .textWaiting, hasWaitingText: true, deliveryBusy: true) == .waitingText)
+        // B ended after A was held: the icon says Cleaning up, so B goes.
+        #expect(ThrowAwayTarget.pick(activity: .cleaningUp, hasWaitingText: true, deliveryBusy: true) == .newestInFlight)
+        #expect(ThrowAwayTarget.pick(activity: .hearing, hasWaitingText: true, deliveryBusy: true) == .thoughtBeingHeard)
+        #expect(ThrowAwayTarget.pick(activity: .idle, hasWaitingText: false, deliveryBusy: false) == .nothing)
+        #expect(ThrowAwayTarget.pick(activity: .idle, hasWaitingText: true, deliveryBusy: false) == .waitingText)
+        #expect(ThrowAwayTarget.pick(activity: .cleaningUp, hasWaitingText: false, deliveryBusy: true) == .newestInFlight)
     }
 }
