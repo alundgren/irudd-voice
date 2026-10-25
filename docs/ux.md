@@ -21,6 +21,7 @@ nothing is recorded until you switch it on again.
 
 | State | Icon | Meaning |
 | --- | --- | --- |
+| Not set up | `mic.badge.plus` | First-run setup isn't finished; the panel shows a Set Up button |
 | Off | `mic.slash` | Switched off; mic closed |
 | Ready | `mic` | Listening, waiting for you to unmute |
 | Hearing you | `mic.fill` | Recording a thought |
@@ -28,13 +29,26 @@ nothing is recorded until you switch it on again.
 | Text waiting | `text.badge.plus` | Text is ready but you moved away; go back to paste it |
 | Mic missing | `mic.badge.xmark` | The pinned mic isn't connected; the app waits |
 
-Off wins over everything, then Mic missing, then the current activity.
+Not set up wins over everything, then Off, then Mic missing, then the
+current activity.
+
+## First run
+
+Setup opens in front of other apps when the app starts and setup isn't
+finished. If you close it, the panel shows a **Set Up irudd-voice…**
+button and the status says Not set up. The on/off switch appears once
+setup is done.
 
 ## Preview while talking
 
-Three choices in the panel and Settings: **Off** (nothing on screen),
-**Dot** (a small dot while hearing you; the default) and **Transcript**
+Three choices in the panel and Settings: **Off** (nothing on screen; the
+default), **Dot** (a small dot while hearing you) and **Transcript**
 (the live transcript, mostly for testing).
+
+## Picking a mic
+
+The mic list is in the panel and in Settings → General, since that's
+where people look first. Picking a mic is the second step of setup.
 
 ## Rules the app never breaks
 

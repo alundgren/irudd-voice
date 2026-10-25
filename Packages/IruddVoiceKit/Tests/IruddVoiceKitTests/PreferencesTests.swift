@@ -5,7 +5,7 @@ struct PreferencesTests {
     @Test func defaults() {
         let prefs = Preferences(store: MemoryStore())
         #expect(prefs.isOn)
-        #expect(prefs.previewMode == .dot)
+        #expect(prefs.previewMode == .off)
         #expect(!prefs.hasCompletedSetup)
     }
 
@@ -22,9 +22,9 @@ struct PreferencesTests {
         #expect(reopened.hasCompletedSetup)
     }
 
-    @Test func unknownPreviewModeFallsBackToDot() {
+    @Test func unknownPreviewModeFallsBackToOff() {
         let store = MemoryStore()
         store.set("hologram", forKey: Preferences.Key.previewMode)
-        #expect(Preferences(store: store).previewMode == .dot)
+        #expect(Preferences(store: store).previewMode == .off)
     }
 }

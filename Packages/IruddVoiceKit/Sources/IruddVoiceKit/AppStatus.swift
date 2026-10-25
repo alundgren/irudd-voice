@@ -1,6 +1,8 @@
 /// What the app is doing right now, as shown by the menu-bar icon and the
 /// top of the panel.
 public enum AppStatus: String, CaseIterable, Sendable {
+    /// First-run setup isn't finished, so the app can't listen yet.
+    case notSetUp
     /// The switch is off. The mic stream is closed.
     case off
     /// On, listening to the pinned mic, waiting for you to unmute.
@@ -14,9 +16,10 @@ public enum AppStatus: String, CaseIterable, Sendable {
     /// The pinned mic isn't connected. The app waits; it never switches mics.
     case micMissing
 
-    /// Picks the status to show. Being off wins over everything, then a
-    /// missing mic, then the current activity.
-    public static func resolve(isOn: Bool, micConnected: Bool, activity: Activity) -> AppStatus {
+    /// Picks the status to show. Unfinished setup wins over everything, then
+    /// being off, then a missing mic, then the current activity.
+    public static func resolve(isSetUp: Bool, isOn: Bool, micConnected: Bool, activity: Activity) -> AppStatus {
+        guard isSetUp else { return .notSetUp }
         guard isOn else { return .off }
         guard micConnected else { return .micMissing }
         switch activity {
@@ -33,6 +36,7 @@ public enum AppStatus: String, CaseIterable, Sendable {
 
     public var title: String {
         switch self {
+        case .notSetUp: "Not set up"
         case .off: "Off"
         case .ready: "Ready"
         case .hearing: "Hearing you"
@@ -44,6 +48,7 @@ public enum AppStatus: String, CaseIterable, Sendable {
 
     public var detail: String {
         switch self {
+        case .notSetUp: "Allow a few permissions and pick a mic to start."
         case .off: "Not listening. The mic is closed."
         case .ready: "Unmute the mic to start a thought."
         case .hearing: "Mute the mic when you're done."
@@ -56,6 +61,7 @@ public enum AppStatus: String, CaseIterable, Sendable {
     /// SF Symbol for the menu bar.
     public var symbolName: String {
         switch self {
+        case .notSetUp: "mic.badge.plus"
         case .off: "mic.slash"
         case .ready: "mic"
         case .hearing: "mic.fill"

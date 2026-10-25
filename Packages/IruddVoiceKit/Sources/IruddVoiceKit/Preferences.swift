@@ -55,7 +55,7 @@ public final class Preferences {
     }
 
     public var previewMode: PreviewMode {
-        get { (store.object(forKey: Key.previewMode) as? String).flatMap(PreviewMode.init) ?? .dot }
+        get { (store.object(forKey: Key.previewMode) as? String).flatMap(PreviewMode.init) ?? .off }
         set { store.set(newValue.rawValue, forKey: Key.previewMode) }
     }
 

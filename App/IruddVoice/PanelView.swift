@@ -24,10 +24,22 @@ struct PanelView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                Toggle("On", isOn: $model.isOn)
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .accessibilityLabel("Listening")
+                if model.hasCompletedSetup {
+                    Toggle("On", isOn: $model.isOn)
+                        .toggleStyle(.switch)
+                        .labelsHidden()
+                        .accessibilityLabel("Listening")
+                }
+            }
+
+            if !model.hasCompletedSetup {
+                Button {
+                    open(SetupView.windowID)
+                } label: {
+                    Text("Set Up irudd-voice…").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
             }
 
             Divider()
@@ -61,9 +73,6 @@ struct PanelView: View {
             Divider()
 
             HStack {
-                if !model.hasCompletedSetup {
-                    Button("Finish Setup…") { open(SetupView.windowID) }
-                }
                 Button("Settings…") {
                     NSApp.activate()
                     openSettings()

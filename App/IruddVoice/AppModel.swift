@@ -27,7 +27,7 @@ final class AppModel {
     var activity: AppStatus.Activity = .idle
 
     var status: AppStatus {
-        AppStatus.resolve(isOn: isOn, micConnected: micConnected, activity: activity)
+        AppStatus.resolve(isSetUp: hasCompletedSetup, isOn: isOn, micConnected: micConnected, activity: activity)
     }
 
     private(set) var startAtLogin: SMAppService.Status = SMAppService.mainApp.status
