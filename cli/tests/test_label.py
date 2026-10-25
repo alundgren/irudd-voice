@@ -328,7 +328,7 @@ def test_teachers_run_contained_and_see_only_text(app_db, fake, no_vocabulary, n
         ]
         disabled = {argv[i + 1] for i, flag in enumerate(argv) if flag == "--disable"}
         assert disabled == {"shell_tool", "unified_exec", "view_image", "image_generation", "multi_agent",
-                            "plugins", "apps", "hooks", "computer_use", "browser_use"}
+                            "plugins", "apps", "hooks", "computer_use", "browser_use", "goals"}
         assert argv[-1] == "-"
         assert Path(argv[argv.index("--output-schema") + 1]) == SHARED / "teacher-reply.schema.json"
     # A fresh empty folder, removed afterwards.

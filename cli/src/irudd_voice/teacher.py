@@ -40,7 +40,7 @@ CODEX_ANSWER_ITEMS = {"agent_message", "reasoning", "todo_list", "error"}
 # with "unsupported call" (scripts/codex-teacher-probe.py checks this).
 CODEX_DISABLED_FEATURES = (
     "shell_tool", "unified_exec", "view_image", "image_generation", "multi_agent", "plugins", "apps",
-    "hooks", "computer_use", "browser_use",
+    "hooks", "computer_use", "browser_use", "goals",
 )
 
 # A Codex permission profile for anything that does run: system files only
