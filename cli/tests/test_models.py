@@ -1,5 +1,6 @@
 """Candidate table, manifest writing and verification. No real model needed."""
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -50,7 +51,6 @@ def test_chat_template_from_tokenizer_config(tmp_path):
     folder = fake_folder(tmp_path / "m", template=None)
     (folder / "tokenizer_config.json").write_text(json.dumps({"chat_template": "{{ x }}"}))
     manifest = models.write_manifest(folder, "m", models.candidate("qwen3.5-2b"))
-    import hashlib
     assert manifest["chat_template_sha256"] == hashlib.sha256(b"{{ x }}").hexdigest()
 
 
