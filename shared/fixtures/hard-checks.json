@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "about": "Every hard-check implementation (Swift app, Python CLI) must give exactly these results, failures in the order dropped, answers, question, numbers, negation, identifiers, new_words. 'replies' test reading the model's raw reply (hit_limit = generation stopped at max_tokens); 'checks' test the checks.",
   "replies": [
     {
@@ -560,6 +560,91 @@
       "cleaned": "Could you look at the tests?",
       "vocabulary": [],
       "failures": []
+    },
+    {
+      "name": "numbers apart are not joined: version",
+      "transcript": "version two point five",
+      "cleaned": "Version 25.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "numbers apart are not joined: minutes and seconds",
+      "transcript": "set the timeout to one minute thirty seconds",
+      "cleaned": "Set the timeout to 130 seconds.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "numbers apart are not joined: counts",
+      "transcript": "retry 2 times with 5 workers",
+      "cleaned": "Retry with 25 workers.",
+      "vocabulary": [],
+      "failures": [
+        "numbers"
+      ]
+    },
+    {
+      "name": "version with a point",
+      "transcript": "version two point five",
+      "cleaned": "Version 2.5.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "joined run before a single number",
+      "transcript": "set the port to eight zero eight zero and use eight workers",
+      "cleaned": "Set the port to 8080 and use eight workers.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "nineteen ninety nine",
+      "transcript": "target nineteen ninety nine",
+      "cleaned": "Target 1999.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "do this is a command",
+      "transcript": "do this for every file",
+      "cleaned": "Do this for every file.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "do that is a command",
+      "transcript": "do that again",
+      "cleaned": "Do that again.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "do it is a command",
+      "transcript": "do it now",
+      "cleaned": "Do it now.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "have it is a command",
+      "transcript": "have it run on CI",
+      "cleaned": "Have it run on CI.",
+      "vocabulary": [],
+      "failures": []
+    },
+    {
+      "name": "does it is a question",
+      "transcript": "does it run on CI",
+      "cleaned": "Does it run on CI.",
+      "vocabulary": [],
+      "failures": [
+        "question"
+      ]
     }
   ]
 }

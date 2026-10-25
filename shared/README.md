@@ -101,11 +101,23 @@ is set, then resets both.
 - Any other word: flush.
 - Flush at the end.
 
-**Matching numbers** (`match_numbers(kept, out)`). Walk the kept numbers in
-order. If the number is in the remaining output numbers, remove it there and
-move on. Otherwise try runs of the next 2–6 kept numbers. The first run whose
-decimal digits joined equal a remaining output number uses up both. If none
-matches, the kept number is unmatched. Output numbers never split.
+**Matching numbers** (`match_numbers(kept, out)`). `kept` are the numbers in
+the transcript with ignored words blanked out (blank, not removed, so
+positions stay), each with its word span from `numbers_with_positions`.
+Compare numbers as decimal strings.
+
+1. Joined runs first. For run length L from min(6, count) down to 2, and
+   for each start from left to right: skip runs touching a used kept
+   number. Skip runs where some number doesn't start on the word right
+   after the previous one ended (numbers must be spoken back to back:
+   `eight zero eight zero`, not `one minute thirty`). Join the run's
+   decimal strings. If an unused output number equals it, use up both.
+2. Then each remaining kept number, in order, uses up an equal output
+   number, or is unmatched.
+3. Fail `numbers` if any kept number or any output number is left.
+
+In the scale step, "`current` or 1" means 1 only when `current` is unset; a
+`current` of 0 stays 0.
 
 **Fillers.** `FILLERS` words anywhere, and two-word fillers (`you know`,
 `kind of`, …) wherever both words appear together, don't count as content.

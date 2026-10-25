@@ -59,6 +59,8 @@ HELPER_VERBS = {
     "have", "has", "will", "shall", "may",
 }
 PRONOUNS = {"you", "i", "we", "it", "this", "that", "there", "they", "he", "she"}
+# "do it now" and "have it run on CI" are commands; "do you…" is a question.
+PERSONS = {"you", "i", "we", "they", "he", "she"}
 QUESTION_WORDS = {"what", "why", "how", "when", "where", "which", "who"}
 
 # Hedges a cleanup may drop; not counted as content for `dropped`.
@@ -162,23 +164,35 @@ def strip_fillers(tokens: list[str]) -> list[str]:
 def numbers_in(tokens: list[str]) -> list[int]:
     """Every number written as digits, digits inside a word ("T3"), or spelled
     out ("one thousand two hundred", "a hundred", "twenty five")."""
-    found: list[int] = []
+    return [value for value, _ in numbers_with_positions(tokens)]
+
+
+def numbers_with_positions(tokens: list[str]) -> list[tuple[int, tuple[int, int]]]:
+    """Like numbers_in, with each number's word span (first index, last index)."""
+    found: list[tuple[int, tuple[int, int]]] = []
     total = 0  # completed thousands/millions
     current: int | None = None  # the part under the current scale
+    first = last = -1
 
     def flush() -> None:
-        nonlocal total, current
+        nonlocal total, current, first, last
         if current is not None or total:
-            found.append(total + (current or 0))
-        total, current = 0, None
+            found.append((total + (current if current is not None else 0), (first, last)))
+        total, current, first, last = 0, None, -1, -1
+
+    def begin(index: int) -> None:
+        nonlocal first, last
+        if first < 0:
+            first = index
+        last = index
 
     for index, token in enumerate(tokens):
         if token.isdigit():
             flush()
-            found.append(int(token))
+            found.append((int(token), (index, index)))
         elif any(c.isdigit() for c in token):
             flush()
-            found.extend(int(run) for run in re.findall(r"[0-9]+", token))
+            found.extend((int(run), (index, index)) for run in re.findall(r"[0-9]+", token))
         elif token in NUMBER_WORDS and not (token == "oh" and current is None and not total):
             value = NUMBER_WORDS[token]
             if current is not None and current % 100 >= 20 and current % 10 == 0 and value < 10:
@@ -192,17 +206,21 @@ def numbers_in(tokens: list[str]) -> list[int]:
                 current = value
             else:
                 current = value
+            begin(index)
         elif token in SCALES:
             scale = SCALES[token]
             if current is None and not total and index > 0 and tokens[index - 1] in ("a", "one"):
                 current = 1  # "a hundred"
+                begin(index - 1)
             if current is None and not total:
                 continue
+            base = 1 if current is None else current  # a current of 0 stays 0
             if scale == 100:
-                current = (current or 1) * 100
+                current = base * 100
             else:
-                total += (current or 1) * scale
+                total += base * scale
                 current = None
+            begin(index)
         elif token == "and" and (current is not None or total):
             continue  # "one hundred and five"
         else:
@@ -211,32 +229,39 @@ def numbers_in(tokens: list[str]) -> list[int]:
     return found
 
 
-def match_numbers(kept: list[int], out: list[int]) -> tuple[list[int], list[int]]:
-    """Pairs the speaker's kept numbers with the output's numbers. Walking the
-    kept numbers in order, each one is matched to an equal output number, or
-    else a run of 2 to 6 consecutive kept numbers is matched to an output
-    number whose digits are those numbers joined ("eight zero eight zero" or
-    "eighty eighty" = 8080). Both sides are used up whole. Returns (kept
-    numbers left unmatched, output numbers left unmatched)."""
-    left = list(out)
+def match_numbers(kept: list[tuple[int, tuple[int, int]]], out: list[int]) -> tuple[list[int], list[int]]:
+    """Pairs the speaker's kept numbers with the output's numbers.
+
+    First, runs of 2–6 kept numbers spoken back to back (each starting on the
+    word right after the previous one ended) are joined as decimal strings
+    ("eight zero eight zero", "eighty eighty" → "8080"). Longest runs first,
+    leftmost first, each matched to an equal output number. Then each
+    remaining kept number is matched to an equal output number. Both sides
+    are used up whole; output numbers never split. Comparison is on decimal
+    strings. Returns (kept numbers unmatched, output numbers unmatched)."""
+    left = [str(n) for n in out]
+    used = [False] * len(kept)
+    for length in range(min(6, len(kept)), 1, -1):
+        for start in range(len(kept) - length + 1):
+            run = range(start, start + length)
+            if any(used[i] for i in run):
+                continue
+            if any(kept[i + 1][1][0] != kept[i][1][1] + 1 for i in range(start, start + length - 1)):
+                continue
+            joined = "".join(str(kept[i][0]) for i in run)
+            if joined in left:
+                left.remove(joined)
+                for i in run:
+                    used[i] = True
     unmatched: list[int] = []
-    index = 0
-    while index < len(kept):
-        if kept[index] in left:
-            left.remove(kept[index])
-            index += 1
+    for i, (value, _) in enumerate(kept):
+        if used[i]:
             continue
-        joined = str(kept[index])
-        for end in range(index + 1, min(index + 6, len(kept))):
-            joined += str(kept[end])
-            if int(joined) in left:
-                left.remove(int(joined))
-                index = end + 1
-                break
+        if str(value) in left:
+            left.remove(str(value))
         else:
-            unmatched.append(kept[index])
-            index += 1
-    return unmatched, left
+            unmatched.append(value)
+    return unmatched, [int(n) for n in left]
 
 
 # ---- Corrections -------------------------------------------------------------
@@ -346,14 +371,16 @@ def check(
     # question: a spoken question must stay a question.
     head = strip_fillers(raw)[:2]
     asks = len(head) == 2 and (
-        (head[0] in HELPER_VERBS and head[1] in PRONOUNS)
+        (head[0] in HELPER_VERBS and head[1] in (PERSONS if head[0] in ("do", "have") else PRONOUNS))
         or (head[0] in QUESTION_WORDS and head[1] in HELPER_VERBS)
     )
     if asks and out and not cleaned.rstrip().endswith("?"):
         failures.add("question")
 
     # numbers: exactly the numbers the speaker kept (corrected-away ones don't count).
-    kept_numbers = numbers_in([w for i, w in enumerate(raw) if i not in ignored])
+    # Ignored words are blanked rather than removed, so positions still show
+    # which numbers were spoken back to back.
+    kept_numbers = numbers_with_positions([w if i not in ignored else "" for i, w in enumerate(raw)])
     missing, extra = match_numbers(kept_numbers, numbers_in(out))
     if missing or extra:
         failures.add("numbers")
