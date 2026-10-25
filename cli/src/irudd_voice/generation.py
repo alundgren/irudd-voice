@@ -28,13 +28,14 @@ EXTRA_STOP_TOKENS = ("<|endoftext|>",)
 @dataclass
 class Generation:
     token_ids: list[int]  # generated tokens, without the stop token
-    stop_token_id: int | None  # the token that ended generation, None at the limit
+    stop_token_id: int | None  # the token that ended generation, None at the limit or the deadline
     text: str
     seconds: float
+    timed_out: bool = False  # stopped at the deadline; token_ids and text are unfinished
 
     @property
     def hit_limit(self) -> bool:
-        return self.stop_token_id is None
+        return self.stop_token_id is None and not self.timed_out
 
 
 class Model:
@@ -67,11 +68,15 @@ class Model:
         bos = self.tokenizer.bos_token
         return self.tokenizer.encode(text, add_special_tokens=bos is None or not text.startswith(bos))
 
-    def generate(self, prompt_ids: list[int], max_tokens: int) -> Generation:
+    def generate(self, prompt_ids: list[int], max_tokens: int, deadline_seconds: float | None = None) -> Generation:
+        """Greedy tokens until a stop token, `max_tokens`, or (when given)
+        `deadline_seconds` after the start, checked after every token like
+        the app's helper."""
         mx = self._mx
         start = time.perf_counter()
         tokens: list[int] = []
         stop = None
+        timed_out = False
         steps = self._generate_step(mx.array(prompt_ids), self.model, max_tokens=max_tokens,
                                     sampler=lambda logits: mx.argmax(logits, axis=-1))
         for token, _ in steps:
@@ -80,14 +85,17 @@ class Model:
                 stop = token
                 break
             tokens.append(token)
+            if deadline_seconds is not None and time.perf_counter() - start >= deadline_seconds:
+                timed_out = True
+                break
         seconds = time.perf_counter() - start
         mx.clear_cache()
-        return Generation(tokens, stop, self.tokenizer.decode(tokens), seconds)
+        return Generation(tokens, stop, self.tokenizer.decode(tokens), seconds, timed_out)
 
     def clean(self, transcript: str, terms: list[str] | tuple[str, ...] = (),
-              max_tokens: int | None = None) -> Generation:
+              max_tokens: int | None = None, deadline_seconds: float | None = None) -> Generation:
         ids = self.encode(self.prompt_text(transcript, terms))
-        return self.generate(ids, max_tokens or self.prompt["generation"]["max_tokens"])
+        return self.generate(ids, max_tokens or self.prompt["generation"]["max_tokens"], deadline_seconds)
 
 
 def stop_token_ids(tokenizer) -> set[int]:

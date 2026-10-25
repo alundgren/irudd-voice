@@ -55,12 +55,4 @@ public struct PasteAgain: Sendable {
             .compactMap { $0 }.first { !$0.isEmpty }
         return text.map { (newest.id, $0) }
     }
-
-    /// Paste here waits for the panel to close before it pastes. Asked again
-    /// after that wait: what to paste if thought `id` is still what Paste last
-    /// again would paste, nil if it was thrown away (or replaced) meanwhile.
-    public func recheck(id: Int64, waiting: (id: Int64, text: String)?, newest: ChunkSummary?) -> (id: Int64, text: String)? {
-        guard let now = text(waiting: waiting, newest: newest), now.id == id else { return nil }
-        return now
-    }
 }

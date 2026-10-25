@@ -68,6 +68,18 @@ def test_a_stop_token_as_the_last_allowed_token_is_a_stop():
     assert (gen.token_ids, gen.stop_token_id, gen.hit_limit) == ([0, 1], 9, False)
 
 
+def test_generation_stops_at_the_deadline(monkeypatch):
+    clock = iter([0.0, 1.0, 2.0, 6.0, 7.0])  # start, then after each token
+    monkeypatch.setattr(generation.time, "perf_counter", lambda: next(clock))
+    gen = model_with([0, 1, 2, 3], stop_ids={9}).generate([5], max_tokens=10, deadline_seconds=5)
+    assert (gen.token_ids, gen.stop_token_id, gen.timed_out, gen.hit_limit) == ([0, 1, 2], None, True, False)
+
+
+def test_generation_without_a_deadline_never_times_out():
+    gen = model_with([0, 1, 2], stop_ids={9}).generate([5], max_tokens=3)
+    assert not gen.timed_out
+
+
 def test_stop_token_ids_add_end_of_turn():
     gemma = FakeTokenizer(eos_ids={1, 106, 50}, eos_id=1, vocab={"<turn|>": 106, "<|turn>": 105})
     assert generation.stop_token_ids(gemma) == {1, 50, 106}

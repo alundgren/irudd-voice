@@ -389,23 +389,6 @@ struct PasteAgainTests {
         #expect(PasteAgain().text(waiting: nil, newest: waiting)! == (6, "Deploy it."))
     }
 
-    /// Paste here picks the text, waits for the panel to close, then asks
-    /// again: thrown away (or replaced by a newer thought) during the wait
-    /// means nothing is pasted.
-    @Test func pasteHereRechecksAfterItsWait() {
-        var memory = PasteAgain()
-        memory.started(id: 3)
-        memory.delivered(id: 3, text: "Held.", outcome: .waiting(.targetMoved))
-        #expect(memory.recheck(id: 3, waiting: (3, "Held."), newest: row(3))! == (3, "Held."))
-        // A newer thought became the newest during the wait.
-        memory.started(id: 4)
-        memory.delivered(id: 4, text: "Newer.", outcome: .pasted)
-        #expect(memory.recheck(id: 3, waiting: nil, newest: row(4)) == nil)
-        // Thrown away during the wait.
-        memory.thrownAway(id: 4)
-        #expect(memory.recheck(id: 4, waiting: nil, newest: row(4)) == nil)
-    }
-
     /// B is transcribed (the newest row) but still being cleaned: Paste last
     /// again pastes nothing until B is delivered, never B's raw text early.
     @Test func thoughtInFlightIsNotPastedUntilDelivered() {

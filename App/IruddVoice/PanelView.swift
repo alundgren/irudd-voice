@@ -65,7 +65,8 @@ struct PanelView: View {
                 Text("Preview while talking").font(.subheadline.weight(.semibold))
             }
 
-            if let waiting = model.waiting {
+            // Newest first; each one stays until it's pasted, copied or thrown away.
+            ForEach(model.waitingTexts.reversed(), id: \.id) { waiting in
                 WaitingTextRow(waiting: waiting)
             }
 
@@ -135,6 +136,8 @@ private struct LastDictation: View {
                     .textSelection(.enabled)
             case "pending":
                 Text("Recognising…").foregroundStyle(.secondary)
+            case "discarded":
+                Text("Thrown away, not pasted.").foregroundStyle(.secondary)
             default:
                 Text(chunk.error ?? "Something went wrong.").foregroundStyle(.red).lineLimit(3)
             }
@@ -192,12 +195,12 @@ private struct WaitingTextRow: View {
             HStack {
                 Button("Paste Here") {
                     dismiss()
-                    model.pasteHere()
+                    model.pasteHere(waiting)
                 }
                 .help("Closes this panel and pastes where your cursor is")
-                Button("Copy") { model.copyWaiting() }
+                Button("Copy") { model.copyWaiting(waiting) }
                 Spacer()
-                Button("Throw Away", role: .destructive) { model.throwAwayWaiting() }
+                Button("Throw Away", role: .destructive) { model.throwAwayWaiting(waiting) }
             }
             .controlSize(.small)
         }

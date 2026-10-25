@@ -1,0 +1,103 @@
+{
+  "about": "How a long thought is split into pieces before cleanup. The Swift app (ThoughtPieces) and the Python CLI (pieces.py) must give exactly these pieces. A case without max_words uses the default (120).",
+  "cases": [
+    {
+      "name": "short thought is one piece, trimmed",
+      "text": "  run the tests  ",
+      "pieces": [
+        "run the tests"
+      ]
+    },
+    {
+      "name": "only spaces is no pieces",
+      "text": " \n\t ",
+      "pieces": []
+    },
+    {
+      "name": "120 words is one piece",
+      "text": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20 w21 w22 w23 w24 w25 w26 w27 w28 w29 w30 w31 w32 w33 w34 w35 w36 w37 w38 w39 w40 w41 w42 w43 w44 w45 w46 w47 w48 w49 w50 w51 w52 w53 w54 w55 w56 w57 w58 w59 w60 w61 w62 w63 w64 w65 w66 w67 w68 w69 w70 w71 w72 w73 w74 w75 w76 w77 w78 w79 w80 w81 w82 w83 w84 w85 w86 w87 w88 w89 w90 w91 w92 w93 w94 w95 w96 w97 w98 w99 w100 w101 w102 w103 w104 w105 w106 w107 w108 w109 w110 w111 w112 w113 w114 w115 w116 w117 w118 w119 w120",
+      "pieces": [
+        "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20 w21 w22 w23 w24 w25 w26 w27 w28 w29 w30 w31 w32 w33 w34 w35 w36 w37 w38 w39 w40 w41 w42 w43 w44 w45 w46 w47 w48 w49 w50 w51 w52 w53 w54 w55 w56 w57 w58 w59 w60 w61 w62 w63 w64 w65 w66 w67 w68 w69 w70 w71 w72 w73 w74 w75 w76 w77 w78 w79 w80 w81 w82 w83 w84 w85 w86 w87 w88 w89 w90 w91 w92 w93 w94 w95 w96 w97 w98 w99 w100 w101 w102 w103 w104 w105 w106 w107 w108 w109 w110 w111 w112 w113 w114 w115 w116 w117 w118 w119 w120"
+      ]
+    },
+    {
+      "name": "121 words is two pieces",
+      "text": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20 w21 w22 w23 w24 w25 w26 w27 w28 w29 w30 w31 w32 w33 w34 w35 w36 w37 w38 w39 w40 w41 w42 w43 w44 w45 w46 w47 w48 w49 w50 w51 w52 w53 w54 w55 w56 w57 w58 w59 w60 w61 w62 w63 w64 w65 w66 w67 w68 w69 w70 w71 w72 w73 w74 w75 w76 w77 w78 w79 w80 w81 w82 w83 w84 w85 w86 w87 w88 w89 w90 w91 w92 w93 w94 w95 w96 w97 w98 w99 w100 w101 w102 w103 w104 w105 w106 w107 w108 w109 w110 w111 w112 w113 w114 w115 w116 w117 w118 w119 w120 w121",
+      "pieces": [
+        "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12 w13 w14 w15 w16 w17 w18 w19 w20 w21 w22 w23 w24 w25 w26 w27 w28 w29 w30 w31 w32 w33 w34 w35 w36 w37 w38 w39 w40 w41 w42 w43 w44 w45 w46 w47 w48 w49 w50 w51 w52 w53 w54 w55 w56 w57 w58 w59 w60 w61 w62 w63 w64 w65 w66 w67 w68 w69 w70 w71 w72 w73 w74 w75 w76 w77 w78 w79 w80 w81 w82 w83 w84 w85 w86 w87 w88 w89 w90 w91 w92 w93 w94 w95 w96 w97 w98 w99 w100 w101 w102 w103 w104 w105 w106 w107 w108 w109 w110 w111 w112 w113 w114 w115 w116 w117 w118 w119 w120",
+        "w121"
+      ]
+    },
+    {
+      "name": "splits at sentence ends",
+      "text": "one two three. four five six? seven eight!",
+      "max_words": 5,
+      "pieces": [
+        "one two three.",
+        "four five six? seven eight!"
+      ]
+    },
+    {
+      "name": "closing quotes and brackets still end a sentence",
+      "text": "he said \"stop.\" then (left now.) ok go",
+      "max_words": 4,
+      "pieces": [
+        "he said \"stop.\"",
+        "then (left now.)",
+        "ok go"
+      ]
+    },
+    {
+      "name": "an ellipsis ends a sentence",
+      "text": "wait for it… and then it went on",
+      "max_words": 4,
+      "pieces": [
+        "wait for it…",
+        "and then it went",
+        "on"
+      ]
+    },
+    {
+      "name": "long sentence splits after clause marks",
+      "text": "alpha beta, gamma delta epsilon; zeta eta: theta iota kappa.",
+      "max_words": 4,
+      "pieces": [
+        "alpha beta,",
+        "gamma delta epsilon;",
+        "zeta eta:",
+        "theta iota kappa."
+      ]
+    },
+    {
+      "name": "dashes end a clause",
+      "text": "first part - second bit — third piece–ish here now",
+      "max_words": 3,
+      "pieces": [
+        "first part -",
+        "second bit —",
+        "third piece–ish here",
+        "now"
+      ]
+    },
+    {
+      "name": "no punctuation cuts at the word limit",
+      "text": "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11",
+      "max_words": 4,
+      "pieces": [
+        "w1 w2 w3 w4",
+        "w5 w6 w7 w8",
+        "w9 w10 w11"
+      ]
+    },
+    {
+      "name": "newlines and tabs are spaces between pieces",
+      "text": "one two.\nthree four.\tfive six.",
+      "max_words": 2,
+      "pieces": [
+        "one two.",
+        "three four.",
+        "five six."
+      ]
+    }
+  ]
+}
