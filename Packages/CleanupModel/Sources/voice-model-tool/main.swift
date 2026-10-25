@@ -10,6 +10,7 @@ import MLX
 //   compare  --reference FILE --swift FILE [--model DIR]
 //   eval     --model DIR --set questions|transcripts [--out FILE]
 //   bench    --model DIR [--runs 10] [--minutes N] [--out FILE]
+//   prompt-check --model DIR --reference FILE   (prompt tokens only; no weights loaded)
 //   xpc-check --model DIR    (the helper's handler over an in-process XPC listener)
 //
 // Common options: --prompt FILE (default shared/cleanup-prompt.json),
@@ -239,6 +240,30 @@ func compare(_ options: Options) async throws -> Bool {
         }
     }
     print(ok ? "OK: \(reference.items.count) inputs, identical tokens (\(reference.model_id))" : "MISMATCH (\(reference.model_id))")
+    return ok
+}
+
+/// Builds every reference item's prompt with the Swift prompt builder and
+/// tokenizer and compares the token IDs. Loads only the tokenizer.
+func promptCheck(_ options: Options) async throws -> Bool {
+    let reference = try JSONDecoder().decode(ParityFile.self, from: Data(contentsOf: options.url("reference")))
+    let prompt = try CleanupPrompt.load(from: options.url("prompt", default: repoFolder.appendingPathComponent("shared/cleanup-prompt.json")))
+    let tokenizer = try await TokenText(folder: options.url("model"))
+    var ok = true
+    for item in reference.items {
+        let ids = try tokenizer.promptTokens(prompt.messages(transcript: item.transcript, terms: prompt.usedTerms(item.vocabulary)), prompt: prompt)
+        guard ids != item.prompt_token_ids else { continue }
+        ok = false
+        let index = zip(ids, item.prompt_token_ids).enumerated().first { $0.element.0 != $0.element.1 }?.offset
+            ?? min(ids.count, item.prompt_token_ids.count)
+        let python = index < item.prompt_token_ids.count ? item.prompt_token_ids[index] : nil
+        let swift = index < ids.count ? ids[index] : nil
+        print("\(item.id): prompt differs at token \(index): python \(python.map { "\($0) \(String(reflecting: tokenizer.text([$0])))" } ?? "(end)"), "
+            + "swift \(swift.map { "\($0) \(String(reflecting: tokenizer.text([$0])))" } ?? "(end)")")
+        print("  python: \(String(reflecting: String(tokenizer.text(Array(item.prompt_token_ids[max(0, index - 8)...])).prefix(160))))")
+        print("  swift:  \(String(reflecting: String(tokenizer.text(Array(ids[max(0, index - 8)...])).prefix(160))))")
+    }
+    print(ok ? "OK: \(reference.items.count) prompts identical" : "MISMATCH")
     return ok
 }
 
@@ -495,6 +520,7 @@ do {
     case "compare": exit(try await compare(options) ? 0 : 1)
     case "eval": exit(try await evaluate(options) ? 0 : 1)
     case "bench": try await bench(options)
+    case "prompt-check": exit(try await promptCheck(options) ? 0 : 1)
     case "xpc-check": exit(try await xpcCheck(options) ? 0 : 1)
     default:
         log("unknown command \(arguments[1])")

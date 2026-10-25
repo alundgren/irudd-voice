@@ -27,6 +27,30 @@ xcodebuild -project App/IruddVoice.xcodeproj -scheme IruddVoice -configuration D
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
   -u "$test_build/Build/Products/Debug/irudd-voice.app" 2>/dev/null || true
 
+echo "== Model tool build"
+# Packages/CleanupModel links MLX, whose Metal shaders only build with xcodebuild.
+tool_build="${TMPDIR:-/tmp}/irudd-voice-model-tool-build"
+(cd Packages/CleanupModel && xcodebuild -scheme voice-model-tool -configuration Release \
+  -destination 'platform=macOS,arch=arm64' -derivedDataPath "$tool_build" build -quiet)
+tool="$tool_build/Build/Products/Release/voice-model-tool"
+
+# Slow: loads real models. IRUDD_VOICE_PARITY_DIR is a folder of Python
+# parity references (<model-id>.json, from `irudd-voice parity-reference`);
+# each one with a model folder in the models folder is checked, then the
+# XPC helper's code runs against the first model over an in-process listener.
+if [[ -n "${IRUDD_VOICE_PARITY_DIR:-}" ]]; then
+  echo "== Model parity and helper check (real models)"
+  models="$HOME/Library/Application Support/irudd-voice/models"
+  pairs=()
+  for reference in "$IRUDD_VOICE_PARITY_DIR"/*.json; do
+    id=$(basename "$reference" .json)
+    [[ -d "$models/$id" ]] && pairs+=("$models/$id" "$reference")
+  done
+  (( ${#pairs[@]} )) || { echo "no references with model folders in $IRUDD_VOICE_PARITY_DIR" >&2; exit 1; }
+  VOICE_MODEL_TOOL="$tool" tests/model-parity.sh "${pairs[@]}"
+  "$tool" xpc-check --model "${pairs[0]}"
+fi
+
 echo "== Probe build"
 swift build -c release --package-path tools/boya-probe
 
