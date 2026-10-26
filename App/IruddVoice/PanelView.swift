@@ -106,8 +106,10 @@ struct PanelView: View {
                     .help(model.databasePath)
                 Spacer()
                 Button("Settings…") {
-                    openSettings()
-                    bringForward { $0.identifier?.rawValue == settingsWindowID }
+                    leavePanel {
+                        openSettings()
+                        bringForward { $0.identifier?.rawValue == settingsWindowID }
+                    }
                 }
                 Button("Quit") { NSApp.terminate(nil) }
             }
@@ -119,8 +121,20 @@ struct PanelView: View {
     }
 
     private func open(_ id: String) {
-        openWindow(id: id)
-        bringForward { $0.identifier?.rawValue.hasPrefix(id) == true }
+        leavePanel {
+            openWindow(id: id)
+            bringForward { $0.identifier?.rawValue.hasPrefix(id) == true }
+        }
+    }
+
+    /// This panel floats above normal windows, so a window opened from it
+    /// lands underneath while the panel stays open. Raising that window can't
+    /// fix it; close the panel instead. The panel is the window that got the
+    /// click, so grab it before the new window can become key.
+    private func leavePanel(after open: () -> Void) {
+        let panel = NSApp.currentEvent?.window ?? NSApp.keyWindow
+        open()
+        panel?.close()
     }
 }
 
