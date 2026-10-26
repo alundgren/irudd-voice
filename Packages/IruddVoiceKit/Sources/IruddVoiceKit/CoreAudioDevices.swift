@@ -8,12 +8,13 @@ public final class CoreAudioDevices: AudioDeviceSource {
     public var onChange: (@MainActor () -> Void)?
 
     private var watchedAlive: Set<AudioDeviceID> = []
+    private let notificationQueue = DispatchQueue(label: "irudd-voice.devices")
+    private lazy var changeListener = Self.makeChangeListener { [weak self] in self?.onChange?() }
 
     public init() {
         var address = Self.address(kAudioHardwarePropertyDevices)
-        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main) { [weak self] _, _ in
-            MainActor.assumeIsolated { self?.onChange?() }
-        }
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address,
+                                           notificationQueue, changeListener)
     }
 
     public func inputDevices() -> [AudioDeviceInfo] {
@@ -21,11 +22,19 @@ public final class CoreAudioDevices: AudioDeviceSource {
         for device in list where !watchedAlive.contains(device.id) {
             watchedAlive.insert(device.id)
             var address = Self.address(kAudioDevicePropertyDeviceIsAlive)
-            AudioObjectAddPropertyListenerBlock(device.id, &address, .main) { [weak self] _, _ in
-                MainActor.assumeIsolated { self?.onChange?() }
-            }
+            AudioObjectAddPropertyListenerBlock(device.id, &address, notificationQueue, changeListener)
         }
         return list
+    }
+
+    nonisolated static func makeChangeListener(_ notify: @escaping @MainActor @Sendable () -> Void)
+        -> AudioObjectPropertyListenerBlock
+    {
+        { _, _ in
+            // Core Audio can wait for listeners during device teardown. Return
+            // before refreshing devices, which can close the audio unit.
+            DispatchQueue.main.async { notify() }
+        }
     }
 
     /// Looks the UID up with kAudioHardwarePropertyTranslateUIDToDevice, so
